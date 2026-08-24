@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Generate index.html from sentiment analysis results with exquisitely styled human-readable formulas, interactive zoom & linked ECharts
+Generate index.html from sentiment analysis results with fully interactive date picker & dashboard refresh
 """
 
 import pandas as pd
@@ -41,30 +41,7 @@ data_json = json.dumps(data_records, ensure_ascii=False)
 
 # Latest values
 latest = data_records[-1]
-prev = data_records[-2]
-
 latest_date = latest['date']
-comp_val = latest['composite_sentiment']
-turnover_val = latest['turnover']
-pct_turnover_val = latest['pct_turnover']
-top3_val = latest['top3_ind']
-pct_top3_val = latest['pct_top3_ind']
-rise_val = latest['rise_pct']
-pct_rise_val = latest['pct_rise_pct']
-prev_margin_pct_val = prev['pct_margin_pct']
-
-if comp_val > 80:
-    comp_badge_class = "bg-red-100 text-red-700"
-    comp_badge_text = "🔥 过热"
-elif comp_val < 20:
-    comp_badge_class = "bg-green-100 text-green-700"
-    comp_badge_text = "❄️ 过冷"
-elif comp_val < 50:
-    comp_badge_class = "bg-blue-100 text-blue-700"
-    comp_badge_text = "⚖️ 中性偏冷"
-else:
-    comp_badge_class = "bg-amber-100 text-amber-700"
-    comp_badge_text = "⚖️ 中性偏暖"
 
 html_content = r"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -76,16 +53,6 @@ html_content = r"""<!DOCTYPE html>
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Apache ECharts -->
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
-    <!-- KaTeX for math rendering -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
-    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
-        onload="renderMathInElement(document.body, {
-            delimiters: [
-                {left: '$$', right: '$$', display: true},
-                {left: '$', right: '$', display: false}
-            ]
-        });"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -132,6 +99,14 @@ html_content = r"""<!DOCTYPE html>
             font-weight: 500;
             color: #cbd5e1;
         }
+        .pulse-highlight {
+            animation: card-pulse 0.4s ease-out;
+        }
+        @keyframes card-pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.02); }
+            100% { transform: scale(1); }
+        }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-800 antialiased min-h-screen">
@@ -168,101 +143,130 @@ html_content = r"""<!DOCTYPE html>
 
     <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
 
-        <!-- Real-Time Metric Cards Dashboard -->
+        <!-- Interactive Real-Time & Historical Metric Cards Dashboard -->
         <section>
-            <div class="flex items-center justify-between mb-4">
-                <h2 class="text-xl font-bold text-slate-900 flex items-center space-x-2">
-                    <span>最新情绪读数看板</span>
-                    <span class="text-xs font-normal text-slate-500 bg-slate-100 px-2.5 py-0.5 rounded-full">T=LATEST_DATE</span>
-                </h2>
-                <div class="text-xs text-slate-500 flex items-center space-x-3">
-                    <span class="flex items-center"><span class="w-2.5 h-2.5 rounded-full bg-red-500 inline-block mr-1"></span>过热 (>80)</span>
-                    <span class="flex items-center"><span class="w-2.5 h-2.5 rounded-full bg-slate-400 inline-block mr-1"></span>中性 (20-80)</span>
-                    <span class="flex items-center"><span class="w-2.5 h-2.5 rounded-full bg-green-500 inline-block mr-1"></span>过冷 (<20)</span>
+            <!-- Date Picker and Dashboard Header Toolbar -->
+            <div class="flex flex-col md:flex-row md:items-center justify-between mb-4 gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                <div class="flex items-center space-x-3">
+                    <div class="w-3 h-3 rounded-full bg-indigo-600 animate-pulse"></div>
+                    <div>
+                        <h2 class="text-base md:text-lg font-bold text-slate-900 flex items-center space-x-2">
+                            <span>情绪读数多周期看板</span>
+                            <span id="badge-selected-status" class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700">T=LATEST_DATE (最新)</span>
+                        </h2>
+                        <p class="text-xs text-slate-500 mt-0.5">支持下拉选定历史日期、左右快捷切换，或直接在下方图表/表格上点击任意时点</p>
+                    </div>
+                </div>
+
+                <!-- Interactive Date Controls -->
+                <div class="flex items-center space-x-2 flex-wrap gap-y-2">
+                    <button onclick="navigateDate(-1)" class="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-all flex items-center space-x-1 shadow-sm" title="切换到前一交易日">
+                        <span>◀ 前一日</span>
+                    </button>
+                    
+                    <div class="relative">
+                        <select id="select-date" onchange="onDateSelectChange(this.value)" class="appearance-none bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 text-xs font-semibold rounded-lg pl-3 pr-8 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer shadow-sm">
+                            <!-- Populated with all dates by JavaScript -->
+                        </select>
+                        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-600">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                            </svg>
+                        </div>
+                    </div>
+
+                    <button onclick="navigateDate(1)" class="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-all flex items-center space-x-1 shadow-sm" title="切换到后一交易日">
+                        <span>后一日 ▶</span>
+                    </button>
+
+                    <button onclick="selectLatestDate()" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-sm transition-all flex items-center space-x-1">
+                        <span>⏮ 回到最新</span>
+                    </button>
                 </div>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+            <!-- Dynamic 5 Indicator Cards Grid -->
+            <div id="cards-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
                 <!-- Composite Sentiment Card -->
-                <div class="glass-card rounded-2xl p-5 shadow-sm border-2 border-indigo-200 bg-gradient-to-br from-indigo-50/50 to-white relative overflow-hidden">
+                <div class="glass-card rounded-2xl p-5 shadow-sm border-2 border-indigo-200 bg-gradient-to-br from-indigo-50/50 to-white relative overflow-hidden transition-all duration-300">
                     <div class="absolute -right-4 -bottom-4 w-24 h-24 bg-indigo-500/10 rounded-full blur-xl pointer-events-none"></div>
                     <div class="text-xs font-semibold text-indigo-600 uppercase tracking-wider mb-1">综合情绪指标</div>
                     <div class="flex items-baseline space-x-2">
-                        <span class="text-3xl font-extrabold text-indigo-900">COMP_VAL</span>
+                        <span id="card-comp-val" class="text-3xl font-extrabold text-indigo-900">-</span>
                         <span class="text-xs font-medium text-slate-500">/ 100</span>
                     </div>
                     <div class="mt-2 flex items-center justify-between">
-                        <span class="text-xs px-2 py-0.5 rounded-md font-medium COMP_BADGE_CLASS">
-                            COMP_BADGE_TEXT
+                        <span id="card-comp-badge" class="text-xs px-2 py-0.5 rounded-md font-medium bg-blue-100 text-blue-700">
+                            -
                         </span>
                         <span class="text-xs text-slate-500">等权合成</span>
                     </div>
                     <div class="mt-3 w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                        <div class="bg-indigo-600 h-full rounded-full" style="width: COMP_VAL%"></div>
+                        <div id="card-comp-bar" class="bg-indigo-600 h-full rounded-full transition-all duration-500" style="width: 0%"></div>
                     </div>
                 </div>
 
                 <!-- Sub 1: Turnover -->
-                <div class="glass-card rounded-2xl p-5 shadow-sm">
+                <div class="glass-card rounded-2xl p-5 shadow-sm transition-all duration-300">
                     <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">换手率分位</div>
                     <div class="flex items-baseline space-x-2">
-                        <span class="text-2xl font-bold text-slate-900">PCT_TURNOVER%</span>
-                        <span class="text-xs text-slate-500">(TURNOVER_VAL%)</span>
+                        <span id="card-turnover-pct" class="text-2xl font-bold text-slate-900">-</span>
+                        <span id="card-turnover-val" class="text-xs text-slate-500">(-)</span>
                     </div>
                     <div class="mt-2 flex items-center justify-between text-xs">
-                        <span class="font-medium text-blue-600">低位极冷</span>
-                        <span class="text-slate-400">活跃度低</span>
+                        <span id="card-turnover-status" class="font-medium text-blue-600">-</span>
+                        <span class="text-slate-400">活跃度</span>
                     </div>
                     <div class="mt-3 w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                        <div class="bg-blue-500 h-full rounded-full" style="width: PCT_TURNOVER%"></div>
+                        <div id="card-turnover-bar" class="bg-blue-500 h-full rounded-full transition-all duration-500" style="width: 0%"></div>
                     </div>
                 </div>
 
                 <!-- Sub 2: Top 3 Industries -->
-                <div class="glass-card rounded-2xl p-5 shadow-sm">
+                <div class="glass-card rounded-2xl p-5 shadow-sm transition-all duration-300">
                     <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">行业集中度分位</div>
                     <div class="flex items-baseline space-x-2">
-                        <span class="text-2xl font-bold text-slate-900">PCT_TOP3%</span>
-                        <span class="text-xs text-slate-500">(TOP3_VAL%)</span>
+                        <span id="card-top3-pct" class="text-2xl font-bold text-slate-900">-</span>
+                        <span id="card-top3-val" class="text-xs text-slate-500">(-)</span>
                     </div>
                     <div class="mt-2 flex items-center justify-between text-xs">
-                        <span class="font-medium text-amber-600">抱团较高</span>
-                        <span class="text-slate-400">前3行业成交</span>
+                        <span id="card-top3-status" class="font-medium text-amber-600">-</span>
+                        <span class="text-slate-400">前3行业</span>
                     </div>
                     <div class="mt-3 w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                        <div class="bg-amber-500 h-full rounded-full" style="width: PCT_TOP3%"></div>
+                        <div id="card-top3-bar" class="bg-amber-500 h-full rounded-full transition-all duration-500" style="width: 0%"></div>
                     </div>
                 </div>
 
                 <!-- Sub 3: Rising Stocks -->
-                <div class="glass-card rounded-2xl p-5 shadow-sm">
+                <div class="glass-card rounded-2xl p-5 shadow-sm transition-all duration-300">
                     <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">上涨个股分位</div>
                     <div class="flex items-baseline space-x-2">
-                        <span class="text-2xl font-bold text-slate-900">PCT_RISE%</span>
-                        <span class="text-xs text-slate-500">(RISE_VAL%)</span>
+                        <span id="card-rise-pct" class="text-2xl font-bold text-slate-900">-</span>
+                        <span id="card-rise-val" class="text-xs text-slate-500">(-)</span>
                     </div>
                     <div class="mt-2 flex items-center justify-between text-xs">
-                        <span class="font-medium text-slate-600">均衡中性</span>
+                        <span id="card-rise-status" class="font-medium text-slate-600">-</span>
                         <span class="text-slate-400">赚钱效应</span>
                     </div>
                     <div class="mt-3 w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                        <div class="bg-emerald-500 h-full rounded-full" style="width: PCT_RISE%"></div>
+                        <div id="card-rise-bar" class="bg-emerald-500 h-full rounded-full transition-all duration-500" style="width: 0%"></div>
                     </div>
                 </div>
 
                 <!-- Sub 4: Margin Buying -->
-                <div class="glass-card rounded-2xl p-5 shadow-sm">
+                <div class="glass-card rounded-2xl p-5 shadow-sm transition-all duration-300">
                     <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">融资买入占比分位</div>
                     <div class="flex items-baseline space-x-2">
-                        <span class="text-2xl font-bold text-slate-900">PREV_MARGIN%</span>
-                        <span class="text-xs text-slate-500">(前日值)</span>
+                        <span id="card-margin-pct" class="text-2xl font-bold text-slate-900">-</span>
+                        <span id="card-margin-val" class="text-xs text-slate-500">(-)</span>
                     </div>
                     <div class="mt-2 flex items-center justify-between text-xs">
-                        <span class="font-medium text-slate-500">杠杆偏低</span>
-                        <span class="text-slate-400">杠杆情绪</span>
+                        <span id="card-margin-status" class="font-medium text-slate-500">-</span>
+                        <span class="text-slate-400">做多情绪</span>
                     </div>
                     <div class="mt-3 w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                        <div class="bg-rose-500 h-full rounded-full" style="width: PREV_MARGIN%"></div>
+                        <div id="card-margin-bar" class="bg-rose-500 h-full rounded-full transition-all duration-500" style="width: 0%"></div>
                     </div>
                 </div>
             </div>
@@ -273,7 +277,7 @@ html_content = r"""<!DOCTYPE html>
             <div class="flex flex-col md:flex-row md:items-center justify-between pb-4 border-b border-slate-100 gap-2">
                 <div>
                     <h2 class="text-lg font-bold text-slate-900">情绪指标交互式全景走势 (2024.09.24 - 至今)</h2>
-                    <p class="text-xs text-slate-500 mt-0.5">支持滚轮缩放、底部滑动条拖拽、十字光标联动、图例筛选与快捷区间切换</p>
+                    <p class="text-xs text-slate-500 mt-0.5">💡 提示：在图表任意点上<strong>鼠标点击</strong>，上方看板将同步切换至该日数据！支持滚轮缩放与滑块拖拽</p>
                 </div>
                 <!-- Range Zoom Buttons -->
                 <div class="flex items-center space-x-2 text-xs flex-wrap gap-y-1">
@@ -479,7 +483,7 @@ html_content = r"""<!DOCTYPE html>
             <div class="flex items-center justify-between mb-4">
                 <div>
                     <h2 class="text-lg font-bold text-slate-900">近15个交易日详细数据明细</h2>
-                    <p class="text-xs text-slate-500">展示各单项指标与百分位排名的逐日变化</p>
+                    <p class="text-xs text-slate-500">💡 提示：<strong>点击表格中任意一行</strong>，上方看板将直接载入并显示该日读数！</p>
                 </div>
                 <a href="情绪指标_结果.xlsx" download class="inline-flex items-center px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 font-medium text-xs border border-indigo-200 transition-colors">
                     <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -570,13 +574,146 @@ html_content = r"""<!DOCTYPE html>
     <!-- Chart & Table Initialization Script -->
     <script>
         const rawData = DATA_JSON_PLACEHOLDER;
+        const dates = rawData.map(d => d.date);
+        let currentIndex = rawData.length - 1;
+
+        // Initialize Select Dropdown with all dates in descending order (latest first)
+        const dateSelect = document.getElementById('select-date');
+        for (let i = rawData.length - 1; i >= 0; i--) {
+            const opt = document.createElement('option');
+            opt.value = rawData[i].date;
+            opt.text = rawData[i].date + (i === rawData.length - 1 ? ' (最新)' : '');
+            dateSelect.appendChild(opt);
+        }
+
+        // Dynamic Dashboard Card Updater Function
+        function updateDashboard(indexOrDate) {
+            let targetIdx = -1;
+            if (typeof indexOrDate === 'number') {
+                targetIdx = indexOrDate;
+            } else if (typeof indexOrDate === 'string') {
+                targetIdx = rawData.findIndex(d => d.date === indexOrDate);
+            }
+            
+            if (targetIdx < 0 || targetIdx >= rawData.length) return;
+            currentIndex = targetIdx;
+            
+            const r = rawData[targetIdx];
+            
+            // Sync select dropdown
+            if (dateSelect && dateSelect.value !== r.date) {
+                dateSelect.value = r.date;
+            }
+            
+            // Update badge date
+            const isLatest = targetIdx === rawData.length - 1;
+            document.getElementById('badge-selected-status').innerText = `T=${r.date}${isLatest ? ' (最新)' : ''}`;
+            
+            // 1. Composite Sentiment Card
+            const compValEl = document.getElementById('card-comp-val');
+            const compBarEl = document.getElementById('card-comp-bar');
+            const compBadgeEl = document.getElementById('card-comp-badge');
+            
+            if (r.composite_sentiment !== null && r.composite_sentiment !== undefined) {
+                compValEl.innerText = r.composite_sentiment.toFixed(2);
+                compBarEl.style.width = `${Math.max(0, Math.min(100, r.composite_sentiment))}%`;
+                
+                if (r.composite_sentiment > 80) {
+                    compBadgeEl.className = "text-xs px-2 py-0.5 rounded-md font-medium bg-red-100 text-red-700";
+                    compBadgeEl.innerText = "🔥 情绪过热";
+                } else if (r.composite_sentiment < 20) {
+                    compBadgeEl.className = "text-xs px-2 py-0.5 rounded-md font-medium bg-green-100 text-green-700";
+                    compBadgeEl.innerText = "❄️ 情绪过冷";
+                } else if (r.composite_sentiment < 50) {
+                    compBadgeEl.className = "text-xs px-2 py-0.5 rounded-md font-medium bg-blue-100 text-blue-700";
+                    compBadgeEl.innerText = "⚖️ 中性偏冷";
+                } else {
+                    compBadgeEl.className = "text-xs px-2 py-0.5 rounded-md font-medium bg-amber-100 text-amber-700";
+                    compBadgeEl.innerText = "⚖️ 中性偏暖";
+                }
+            } else {
+                compValEl.innerText = "-";
+                compBarEl.style.width = "0%";
+                compBadgeEl.className = "text-xs px-2 py-0.5 rounded-md font-medium bg-slate-100 text-slate-500";
+                compBadgeEl.innerText = "数据缺失";
+            }
+
+            // Helper to update sub cards
+            const updateSubCard = (prefix, pctVal, rawVal) => {
+                const pctEl = document.getElementById(`card-${prefix}-pct`);
+                const valEl = document.getElementById(`card-${prefix}-val`);
+                const barEl = document.getElementById(`card-${prefix}-bar`);
+                const statusEl = document.getElementById(`card-${prefix}-status`);
+
+                if (pctVal !== null && pctVal !== undefined) {
+                    pctEl.innerText = `${pctVal.toFixed(2)}%`;
+                    valEl.innerText = `(${rawVal !== null ? rawVal.toFixed(2) : '-'}%)`;
+                    barEl.style.width = `${Math.max(0, Math.min(100, pctVal))}%`;
+                    
+                    if (pctVal >= 80) {
+                        statusEl.innerText = "高位亢奋";
+                        statusEl.className = "font-medium text-red-600";
+                    } else if (pctVal <= 20) {
+                        statusEl.innerText = "低位极冷";
+                        statusEl.className = "font-medium text-blue-600";
+                    } else {
+                        statusEl.innerText = "常态中性";
+                        statusEl.className = "font-medium text-slate-600";
+                    }
+                } else {
+                    pctEl.innerText = "未更新";
+                    valEl.innerText = rawVal !== null ? `(${rawVal.toFixed(2)}%)` : "(-)";
+                    barEl.style.width = "0%";
+                    statusEl.innerText = "暂未发布";
+                    statusEl.className = "font-medium text-slate-400";
+                }
+            };
+
+            updateSubCard('turnover', r.pct_turnover, r.turnover);
+            updateSubCard('top3', r.pct_top3_ind, r.top3_ind);
+            updateSubCard('rise', r.pct_rise_pct, r.rise_pct);
+            updateSubCard('margin', r.pct_margin_pct, r.margin_pct);
+
+            // Animate card container
+            const container = document.getElementById('cards-container');
+            container.classList.remove('pulse-highlight');
+            void container.offsetWidth; // trigger reflow
+            container.classList.add('pulse-highlight');
+
+            // Highlight corresponding row in recent data table
+            document.querySelectorAll('#recent-table-body tr').forEach(row => {
+                if (row.getAttribute('data-date') === r.date) {
+                    row.classList.add('bg-indigo-100/90', 'font-bold', 'border-indigo-400');
+                    row.classList.remove('hover:bg-slate-50');
+                } else {
+                    row.classList.remove('bg-indigo-100/90', 'font-bold', 'border-indigo-400');
+                    row.classList.add('hover:bg-slate-50');
+                }
+            });
+        }
+
+        function onDateSelectChange(dateStr) {
+            updateDashboard(dateStr);
+        }
+
+        function navigateDate(delta) {
+            const nextIdx = Math.max(0, Math.min(rawData.length - 1, currentIndex + delta));
+            updateDashboard(nextIdx);
+        }
+
+        function selectLatestDate() {
+            updateDashboard(rawData.length - 1);
+        }
 
         // Populate Table with last 15 days
         const tbody = document.getElementById('recent-table-body');
         const recentRows = rawData.slice(-15).reverse();
         recentRows.forEach(r => {
             const tr = document.createElement('tr');
-            tr.className = "hover:bg-slate-50 transition-colors";
+            tr.setAttribute('data-date', r.date);
+            tr.className = "hover:bg-slate-50 transition-colors cursor-pointer";
+            tr.title = `点击切换看板到 ${r.date} 数据`;
+            tr.onclick = () => updateDashboard(r.date);
             
             const getBadge = (val) => {
                 if (val === null || val === undefined) return '<span class="text-slate-400">NaN</span>';
@@ -593,14 +730,17 @@ html_content = r"""<!DOCTYPE html>
             };
 
             tr.innerHTML = `
-                <td class="px-3 py-2.5 font-sans font-medium text-slate-900">${r.date}</td>
-                <td class="px-3 py-2.5">${r.turnover ?? '-'}</td>
+                <td class="px-3 py-2.5 font-sans font-medium text-slate-900 flex items-center space-x-1">
+                    <span>${r.date}</span>
+                    <span class="text-[10px] text-slate-400 ml-1">🔍</span>
+                </td>
+                <td class="px-3 py-2.5">${r.turnover !== null ? r.turnover.toFixed(2) : '-'}</td>
                 <td class="px-3 py-2.5">${getBadge(r.pct_turnover)}</td>
-                <td class="px-3 py-2.5">${r.top3_ind ?? '-'}</td>
+                <td class="px-3 py-2.5">${r.top3_ind !== null ? r.top3_ind.toFixed(2) : '-'}</td>
                 <td class="px-3 py-2.5">${getBadge(r.pct_top3_ind)}</td>
-                <td class="px-3 py-2.5">${r.rise_pct ?? '-'}</td>
+                <td class="px-3 py-2.5">${r.rise_pct !== null ? r.rise_pct.toFixed(2) : '-'}</td>
                 <td class="px-3 py-2.5">${getBadge(r.pct_rise_pct)}</td>
-                <td class="px-3 py-2.5">${r.margin_pct ?? '-'}</td>
+                <td class="px-3 py-2.5">${r.margin_pct !== null ? r.margin_pct.toFixed(2) : '-'}</td>
                 <td class="px-3 py-2.5">${getBadge(r.pct_margin_pct)}</td>
                 <td class="px-3 py-2.5 bg-indigo-50/40">${getCompositeBadge(r.composite_sentiment)}</td>
             `;
@@ -608,7 +748,6 @@ html_content = r"""<!DOCTYPE html>
         });
 
         // Initialize ECharts instances
-        const dates = rawData.map(d => d.date);
         const chartSub = echarts.init(document.getElementById('chart-sub-indicators'));
         const chartComp = echarts.init(document.getElementById('chart-composite'));
         const chartRaw = echarts.init(document.getElementById('chart-raw'));
@@ -623,7 +762,6 @@ html_content = r"""<!DOCTYPE html>
             ]
         };
 
-        // Shared dataZoom configs for charts
         const commonDataZoom = [
             {
                 type: 'inside',
@@ -730,6 +868,15 @@ html_content = r"""<!DOCTYPE html>
         // Connect charts for unified cursor/tooltip interaction
         echarts.connect([chartSub, chartComp, chartRaw]);
 
+        // Clicking on any chart data point updates the dashboard!
+        [chartSub, chartComp, chartRaw].forEach(chart => {
+            chart.on('click', function (params) {
+                if (params.name) {
+                    updateDashboard(params.name);
+                }
+            });
+        });
+
         // Synchronize dataZoom across all 3 charts when scrolling/dragging
         let isSyncing = false;
         function syncZoom(sourceChart) {
@@ -772,7 +919,6 @@ html_content = r"""<!DOCTYPE html>
         function setZoomPercent(startPct, btnEl) {
             const zoomPayload = { start: startPct, end: 100 };
             
-            // Dispatch dataZoom action to all charts
             [chartSub, chartComp, chartRaw].forEach(chart => {
                 chart.dispatchAction({
                     type: 'dataZoom',
@@ -781,7 +927,6 @@ html_content = r"""<!DOCTYPE html>
                 });
             });
 
-            // Update button styles
             document.querySelectorAll('.zoom-btn').forEach(b => {
                 if (b.id !== 'btn-zoom-reset') {
                     b.classList.remove('bg-indigo-600', 'text-white', 'shadow-sm');
@@ -813,6 +958,9 @@ html_content = r"""<!DOCTYPE html>
         function resetZoom() {
             setZoomPercent(0, document.getElementById('btn-zoom-all'));
         }
+
+        // Initialize dashboard with latest date on page load
+        updateDashboard(rawData.length - 1);
     </script>
 </body>
 </html>
@@ -820,16 +968,6 @@ html_content = r"""<!DOCTYPE html>
 
 # Replace placeholders
 html_content = html_content.replace('LATEST_DATE', str(latest_date))
-html_content = html_content.replace('COMP_VAL', str(comp_val))
-html_content = html_content.replace('COMP_BADGE_CLASS', comp_badge_class)
-html_content = html_content.replace('COMP_BADGE_TEXT', comp_badge_text)
-html_content = html_content.replace('PCT_TURNOVER', str(pct_turnover_val))
-html_content = html_content.replace('TURNOVER_VAL', str(turnover_val))
-html_content = html_content.replace('PCT_TOP3', str(pct_top3_val))
-html_content = html_content.replace('TOP3_VAL', str(top3_val))
-html_content = html_content.replace('PCT_RISE', str(pct_rise_val))
-html_content = html_content.replace('RISE_VAL', str(rise_val))
-html_content = html_content.replace('PREV_MARGIN', str(prev_margin_pct_val))
 html_content = html_content.replace('DATA_JSON_PLACEHOLDER', data_json)
 
 # Write to root index.html and docs/index.html
@@ -842,4 +980,4 @@ with open(output_html_root, 'w', encoding='utf-8') as f:
 with open(output_html_docs, 'w', encoding='utf-8') as f:
     f.write(html_content)
 
-print(f"Generated index.html successfully with visual fraction cards!")
+print(f"Generated index.html successfully with dynamic date selector & instant dashboard refresh!")
