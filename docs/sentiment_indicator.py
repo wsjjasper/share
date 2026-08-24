@@ -9,6 +9,8 @@
 
 import pandas as pd
 import numpy as np
+import os
+import sys
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -17,7 +19,12 @@ import matplotlib.dates as mdates
 # ========================
 # 1. 读取数据
 # ========================
-df = pd.read_excel(r'D:\vscode_workspace\情绪指标\副本万得全A.xlsx')
+raw_path = r'D:\vscode_workspace\情绪指标\副本万得全A.xlsx'
+if not os.path.exists(raw_path):
+    print(f"错误: 未找到数据文件 {raw_path}")
+    sys.exit(1)
+
+df = pd.read_excel(raw_path)
 
 # 重命名列 (按位置)
 df.columns = [
@@ -112,8 +119,15 @@ output.columns = ['日期',
 
 # 保存Excel
 output_path = r'D:\vscode_workspace\情绪指标\情绪指标_结果.xlsx'
-output.to_excel(output_path, index=False, float_format='%.2f')
-print(f"\n结果已保存至: {output_path}")
+try:
+    output.to_excel(output_path, index=False, float_format='%.2f')
+    print(f"\n结果已保存至: {output_path}")
+except PermissionError:
+    print(f"\n[警告] {output_path} 正在被 Excel 打开占用，正在尝试写入备份文件...")
+    backup_path = r'D:\vscode_workspace\情绪指标\情绪指标_结果_latest.xlsx'
+    output.to_excel(backup_path, index=False, float_format='%.2f')
+    print(f"已保存至备份文件: {backup_path}")
+
 print(f"数据行数: {len(output)}")
 print(f"日期范围: {output['日期'].min()} ~ {output['日期'].max()}")
 

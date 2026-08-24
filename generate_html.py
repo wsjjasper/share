@@ -8,8 +8,11 @@ import json
 import os
 import shutil
 
-# Read excel results
+# Read excel results (with fallback)
 excel_path = r'D:\vscode_workspace\情绪指标\情绪指标_结果.xlsx'
+if not os.path.exists(excel_path):
+    excel_path = r'D:\vscode_workspace\情绪指标\情绪指标_结果_latest.xlsx'
+
 df = pd.read_excel(excel_path)
 cols = [
     'date', 'turnover', 'top3_ind', 'rise_pct', 'margin_pct',
