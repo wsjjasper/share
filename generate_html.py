@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Generate index.html from sentiment analysis results
+Generate index.html from sentiment analysis results with fully functional interactive zoom & linked ECharts
 """
 
 import pandas as pd
 import json
 import os
+import shutil
 
 # Read excel results
 excel_path = r'D:\vscode_workspace\情绪指标\情绪指标_结果.xlsx'
@@ -96,6 +97,16 @@ html_content = """<!DOCTYPE html>
             background: rgba(255, 255, 255, 0.95);
             backdrop-filter: blur(10px);
             border: 1px solid rgba(226, 232, 240, 0.8);
+        }
+        .zoom-btn {
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+        .zoom-btn:hover {
+            transform: translateY(-1px);
+        }
+        .zoom-btn:active {
+            transform: translateY(0px);
         }
     </style>
 </head>
@@ -238,13 +249,16 @@ html_content = """<!DOCTYPE html>
             <div class="flex flex-col md:flex-row md:items-center justify-between pb-4 border-b border-slate-100 gap-2">
                 <div>
                     <h2 class="text-lg font-bold text-slate-900">情绪指标交互式全景走势 (2024.09.24 - 至今)</h2>
-                    <p class="text-xs text-slate-500 mt-0.5">支持缩放、十字光标联动、图例筛选与悬停详细数据查看</p>
+                    <p class="text-xs text-slate-500 mt-0.5">支持滚轮缩放、底部滑动条拖拽、十字光标联动、图例筛选与快捷区间切换</p>
                 </div>
-                <div class="flex items-center space-x-2 text-xs">
-                    <button onclick="resetZoom()" class="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium transition-colors">重置缩放</button>
-                    <button onclick="zoomToRange(90)" class="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium transition-colors">近3个月</button>
-                    <button onclick="zoomToRange(180)" class="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium transition-colors">近6个月</button>
-                    <button onclick="zoomToRange(0)" class="px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 font-medium hover:bg-blue-100 transition-colors">全部区间</button>
+                <!-- Range Zoom Buttons -->
+                <div class="flex items-center space-x-2 text-xs flex-wrap gap-y-1">
+                    <button id="btn-zoom-1m" onclick="zoomByMonths(1, this)" class="zoom-btn px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium">近1个月</button>
+                    <button id="btn-zoom-3m" onclick="zoomByMonths(3, this)" class="zoom-btn px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium">近3个月</button>
+                    <button id="btn-zoom-6m" onclick="zoomByMonths(6, this)" class="zoom-btn px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium">近6个月</button>
+                    <button id="btn-zoom-1y" onclick="zoomByMonths(12, this)" class="zoom-btn px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium">近1年</button>
+                    <button id="btn-zoom-all" onclick="zoomAll(this)" class="zoom-btn px-3 py-1.5 rounded-lg bg-indigo-600 text-white font-medium shadow-sm">全部区间</button>
+                    <button id="btn-zoom-reset" onclick="resetZoom()" class="zoom-btn px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium border border-slate-200">重置缩放</button>
                 </div>
             </div>
 
@@ -274,7 +288,7 @@ html_content = """<!DOCTYPE html>
                         <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block mr-2"></span>
                         原始指标绝对值走势 (双Y轴: 换手率/融资占比 vs 上涨家数占比/行业集中度)
                     </h3>
-                    <div id="chart-raw" class="w-full h-64"></div>
+                    <div id="chart-raw" class="w-full h-72"></div>
                 </div>
             </div>
         </section>
@@ -549,6 +563,42 @@ html_content = """<!DOCTYPE html>
             ]
         };
 
+        // Shared dataZoom configs for charts
+        const commonDataZoom = [
+            {
+                type: 'inside',
+                xAxisIndex: [0],
+                start: 0,
+                end: 100
+            }
+        ];
+
+        const sliderDataZoom = [
+            {
+                type: 'inside',
+                xAxisIndex: [0],
+                start: 0,
+                end: 100
+            },
+            {
+                type: 'slider',
+                xAxisIndex: [0],
+                bottom: 8,
+                height: 22,
+                start: 0,
+                end: 100,
+                borderColor: '#e2e8f0',
+                backgroundColor: '#f8fafc',
+                fillerColor: 'rgba(79, 70, 229, 0.18)',
+                handleStyle: { color: '#4f46e5', borderColor: '#4338ca' },
+                moveHandleStyle: { color: '#6366f1' },
+                dataBackground: {
+                    lineStyle: { color: '#cbd5e1' },
+                    areaStyle: { color: '#e2e8f0' }
+                }
+            }
+        ];
+
         // Option 1: Sub-indicators
         const optSub = {
             tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
@@ -556,6 +606,7 @@ html_content = """<!DOCTYPE html>
             grid: { left: '4%', right: '5%', top: '15%', bottom: '15%' },
             xAxis: { type: 'category', data: dates, boundaryGap: false },
             yAxis: { type: 'value', min: 0, max: 100, name: '分位数 (%)' },
+            dataZoom: commonDataZoom,
             series: [
                 { name: '换手率分位', type: 'line', data: rawData.map(d => d.pct_turnover), smooth: true, itemStyle: { color: '#3b82f6' }, lineStyle: { width: 1.5 } },
                 { name: '前3行业占比分位', type: 'line', data: rawData.map(d => d.pct_top3_ind), smooth: true, itemStyle: { color: '#f59e0b' }, lineStyle: { width: 1.5 } },
@@ -572,6 +623,7 @@ html_content = """<!DOCTYPE html>
             grid: { left: '4%', right: '5%', top: '15%', bottom: '15%' },
             xAxis: { type: 'category', data: dates, boundaryGap: false },
             yAxis: { type: 'value', min: 0, max: 100, name: '综合情绪 (%)' },
+            dataZoom: commonDataZoom,
             series: [
                 {
                     name: '综合情绪指标',
@@ -596,12 +648,13 @@ html_content = """<!DOCTYPE html>
         const optRaw = {
             tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
             legend: { data: ['换手率(%)', '融资买入额占比(%)', '上涨个股占比(%)', '前3行业占比(%)'], top: 0 },
-            grid: { left: '4%', right: '5%', top: '15%', bottom: '15%' },
+            grid: { left: '4%', right: '5%', top: '15%', bottom: '25%' },
             xAxis: { type: 'category', data: dates, boundaryGap: false },
             yAxis: [
                 { type: 'value', name: '换手/融资 (%)', position: 'left' },
                 { type: 'value', name: '上涨/集中度 (%)', position: 'right' }
             ],
+            dataZoom: sliderDataZoom,
             series: [
                 { name: '换手率(%)', type: 'line', yAxisIndex: 0, data: rawData.map(d => d.turnover), smooth: true, itemStyle: { color: '#3b82f6' } },
                 { name: '融资买入额占比(%)', type: 'line', yAxisIndex: 0, data: rawData.map(d => d.margin_pct), smooth: true, itemStyle: { color: '#f97316' } },
@@ -614,8 +667,40 @@ html_content = """<!DOCTYPE html>
         chartComp.setOption(optComp);
         chartRaw.setOption(optRaw);
 
-        // Connect charts for unified cursor/interaction
+        // Connect charts for unified cursor/tooltip interaction
         echarts.connect([chartSub, chartComp, chartRaw]);
+
+        // Synchronize dataZoom across all 3 charts when scrolling/dragging
+        let isSyncing = false;
+        function syncZoom(sourceChart) {
+            sourceChart.on('dataZoom', function (params) {
+                if (isSyncing) return;
+                isSyncing = true;
+                let start, end;
+                if (params.batch && params.batch[0]) {
+                    start = params.batch[0].start;
+                    end = params.batch[0].end;
+                } else {
+                    start = params.start;
+                    end = params.end;
+                }
+                if (start !== undefined && end !== undefined) {
+                    [chartSub, chartComp, chartRaw].forEach(target => {
+                        if (target !== sourceChart) {
+                            target.dispatchAction({
+                                type: 'dataZoom',
+                                start: start,
+                                end: end
+                            });
+                        }
+                    });
+                }
+                setTimeout(() => { isSyncing = false; }, 50);
+            });
+        }
+        syncZoom(chartSub);
+        syncZoom(chartComp);
+        syncZoom(chartRaw);
 
         window.addEventListener('resize', () => {
             chartSub.resize();
@@ -623,22 +708,50 @@ html_content = """<!DOCTYPE html>
             chartRaw.resize();
         });
 
-        function resetZoom() {
-            [chartSub, chartComp, chartRaw].forEach(c => {
-                c.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
+        // Zoom helper functions with active button state
+        function setZoomPercent(startPct, btnEl) {
+            const zoomPayload = { start: startPct, end: 100 };
+            
+            // Dispatch dataZoom action to all charts
+            [chartSub, chartComp, chartRaw].forEach(chart => {
+                chart.dispatchAction({
+                    type: 'dataZoom',
+                    start: startPct,
+                    end: 100
+                });
             });
+
+            // Update button styles
+            document.querySelectorAll('.zoom-btn').forEach(b => {
+                if (b.id !== 'btn-zoom-reset') {
+                    b.classList.remove('bg-indigo-600', 'text-white', 'shadow-sm');
+                    b.classList.add('bg-slate-100', 'text-slate-700');
+                }
+            });
+            if (btnEl && btnEl.id !== 'btn-zoom-reset') {
+                btnEl.classList.remove('bg-slate-100', 'text-slate-700');
+                btnEl.classList.add('bg-indigo-600', 'text-white', 'shadow-sm');
+            }
         }
 
-        function zoomToRange(days) {
-            if (days === 0) {
-                resetZoom();
-                return;
-            }
-            const total = dates.length;
-            const startPct = Math.max(0, ((total - days) / total) * 100);
-            [chartSub, chartComp, chartRaw].forEach(c => {
-                c.dispatchAction({ type: 'dataZoom', start: startPct, end: 100 });
-            });
+        function zoomByMonths(months, btnEl) {
+            const latestDateObj = new Date(dates[dates.length - 1]);
+            const targetDateObj = new Date(latestDateObj);
+            targetDateObj.setMonth(targetDateObj.getMonth() - months);
+            const targetStr = targetDateObj.toISOString().slice(0, 10);
+            
+            let idx = dates.findIndex(d => d >= targetStr);
+            if (idx === -1) idx = 0;
+            const startPct = Math.max(0, Math.min(99, (idx / (dates.length - 1)) * 100));
+            setZoomPercent(startPct, btnEl);
+        }
+
+        function zoomAll(btnEl) {
+            setZoomPercent(0, btnEl);
+        }
+
+        function resetZoom() {
+            setZoomPercent(0, document.getElementById('btn-zoom-all'));
         }
     </script>
 </body>
@@ -659,9 +772,14 @@ html_content = html_content.replace('RISE_VAL', str(rise_val))
 html_content = html_content.replace('PREV_MARGIN', str(prev_margin_pct_val))
 html_content = html_content.replace('DATA_JSON_PLACEHOLDER', data_json)
 
-# Write to file
-output_html_path = r'D:\vscode_workspace\情绪指标\index.html'
-with open(output_html_path, 'w', encoding='utf-8') as f:
+# Write to root index.html and docs/index.html
+output_html_root = r'D:\vscode_workspace\情绪指标\index.html'
+output_html_docs = r'D:\vscode_workspace\情绪指标\docs\index.html'
+
+with open(output_html_root, 'w', encoding='utf-8') as f:
     f.write(html_content)
 
-print(f"Generated index.html successfully at {output_html_path}")
+with open(output_html_docs, 'w', encoding='utf-8') as f:
+    f.write(html_content)
+
+print(f"Generated index.html successfully at root and docs!")
