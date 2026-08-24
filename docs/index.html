@@ -228,19 +228,19 @@
             </div>
         </section>
 
-        <!-- Methodology & Theoretical Framework -->
+        <!-- Methodology & Human-Readable Framework -->
         <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <!-- Left: Methodology & Indicators -->
+            <!-- Left: 4 Core Indicators Table -->
             <div class="glass-card rounded-2xl p-6 shadow-sm border border-slate-200 flex flex-col justify-between">
                 <div>
                     <h2 class="text-lg font-bold text-slate-900 mb-3 flex items-center">
                         <svg class="w-5 h-5 mr-2 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                         </svg>
-                        指标构建方法论
+                        四大微观情绪子指标
                     </h2>
                     <p class="text-sm text-slate-600 leading-relaxed mb-4">
-                        基于 <strong>万得全A (881001.WI)</strong> 核心高频行情与交易数据，选取涵盖“交易热度、结构集中度、广度效应、杠杆博弈”四个维度的核心指标，消除绝对值随市场体量扩张的量纲漂移。
+                        基于 <strong>万得全A (881001.WI)</strong> 核心日频交易数据，从“交易活跃度、资金抱团集中度、赚钱效应广度、杠杆做多情绪”四个独立维度综合衡量市场水温：
                     </p>
 
                     <div class="overflow-x-auto rounded-xl border border-slate-200">
@@ -249,7 +249,7 @@
                                 <tr>
                                     <th class="px-3 py-2.5">#</th>
                                     <th class="px-3 py-2.5">子指标</th>
-                                    <th class="px-3 py-2.5">数据来源</th>
+                                    <th class="px-3 py-2.5">通俗定义与计算口径</th>
                                     <th class="px-3 py-2.5">市场微观含义</th>
                                 </tr>
                             </thead>
@@ -257,77 +257,84 @@
                                 <tr class="hover:bg-slate-50">
                                     <td class="px-3 py-2.5 font-bold text-slate-900">1</td>
                                     <td class="px-3 py-2.5 font-semibold text-blue-600">换手率</td>
-                                    <td class="px-3 py-2.5 font-mono">万得全A换手率 (%)</td>
-                                    <td class="px-3 py-2.5">反映全市场交投活跃度与筹码换手意愿</td>
+                                    <td class="px-3 py-2.5">当日全市场成交额 / 自由流通市值</td>
+                                    <td class="px-3 py-2.5">衡量交投活跃度与筹码换手意愿</td>
                                 </tr>
                                 <tr class="hover:bg-slate-50">
                                     <td class="px-3 py-2.5 font-bold text-slate-900">2</td>
-                                    <td class="px-3 py-2.5 font-semibold text-amber-600">前3行业成交占比</td>
-                                    <td class="px-3 py-2.5 font-mono">前三行业成交额 / 总成交额</td>
-                                    <td class="px-3 py-2.5">反映市场主线资金抱团集中度与分化程度</td>
+                                    <td class="px-3 py-2.5 font-semibold text-amber-600">前3行业占比</td>
+                                    <td class="px-3 py-2.5">成交额最大的前3个行业合计 / 全市场成交额</td>
+                                    <td class="px-3 py-2.5">衡量主线资金抱团集中度与分化程度</td>
                                 </tr>
                                 <tr class="hover:bg-slate-50">
                                     <td class="px-3 py-2.5 font-bold text-slate-900">3</td>
                                     <td class="px-3 py-2.5 font-semibold text-emerald-600">上涨个股占比</td>
-                                    <td class="px-3 py-2.5 font-mono">上涨家数 / 样本成份总数</td>
-                                    <td class="px-3 py-2.5">反映市场广度与普遍赚钱效应（普涨 vs 普跌）</td>
+                                    <td class="px-3 py-2.5">当日上涨股票数量 / 全市场交易股票总数</td>
+                                    <td class="px-3 py-2.5">衡量市场广度与散户普遍赚钱效应</td>
                                 </tr>
                                 <tr class="hover:bg-slate-50">
                                     <td class="px-3 py-2.5 font-bold text-slate-900">4</td>
-                                    <td class="px-3 py-2.5 font-semibold text-rose-600">融资买入额占比</td>
-                                    <td class="px-3 py-2.5 font-mono">融资买入额 / 总成交额</td>
-                                    <td class="px-3 py-2.5">反映高风险偏好杠杆资金对后市的进攻情绪</td>
+                                    <td class="px-3 py-2.5 font-semibold text-rose-600">融资买入占比</td>
+                                    <td class="px-3 py-2.5">两市融资买入总金额 / 全市场总成交额</td>
+                                    <td class="px-3 py-2.5">衡量高风险偏好杠杆资金的主动进攻情绪</td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
                 </div>
 
-                <div class="mt-4 p-3 bg-amber-50/70 border border-amber-200/80 rounded-xl text-xs text-amber-800">
-                    <strong>💡 数据处理说明：</strong>
-                    融资买入数据自 2010-03-31 起开始发布。当遇到最新交易日融资数据尚未更新发布（或缺失）时，算法自动采用其余有效指标的平均分位数进行无偏合成。
+                <div class="mt-4 p-3 bg-blue-50/70 border border-blue-200/80 rounded-xl text-xs text-blue-800">
+                    <strong>💡 为什么需要分位数转化？</strong>
+                    直接看换手率或成交额等绝对数值，会受到市场总市值膨胀、制度变革等长期趋势影响。通过转换为“滚动252日相对历史分位数”，可以直接比较当前情绪与过去一年相比是冷是热。
                 </div>
             </div>
 
-            <!-- Right: Math & Formulas -->
+            <!-- Right: Human Readable Math & Formulas -->
             <div class="glass-card rounded-2xl p-6 shadow-sm border border-slate-200 flex flex-col justify-between">
                 <div>
                     <h2 class="text-lg font-bold text-slate-900 mb-3 flex items-center">
                         <svg class="w-5 h-5 mr-2 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14"></path>
                         </svg>
-                        数学表达与分位数算法
+                        算法逻辑与通俗公式
                     </h2>
 
                     <div class="space-y-4 text-sm text-slate-600">
-                        <div>
-                            <h3 class="font-semibold text-slate-800 text-xs uppercase tracking-wider mb-1.5">1. 滚动252个交易日分位数排名 (Percentile Rank)</h3>
-                            <div class="bg-slate-900 text-slate-100 p-3.5 rounded-xl text-xs overflow-x-auto">
-                                $$	ext{Percentile}_{i,t} = rac{	ext{Count}(X_{i} < X_{i,t}) + 0.5 	imes 	ext{Count}(X_{i} = X_{i,t})}{N_{	ext{valid}}} 	imes 100$$
+                        <!-- Step 1 Formula Box -->
+                        <div class="bg-slate-900 text-slate-100 p-4 rounded-xl shadow-sm">
+                            <div class="text-indigo-400 font-semibold text-xs tracking-wider mb-2 uppercase">第一步：单项指标 ➔ 滚动252日历史分位数 (0~100%)</div>
+                            <div class="text-sm font-sans leading-relaxed py-1 overflow-x-auto">
+                                $$	ext{历史分位数 (\%)} = rac{	ext{过去252个交易日中数值小于今日的天数} + 0.5 	imes 	ext{等于今日的天数}}{	ext{过去252日有效交易总天数}} 	imes 100\%$$
                             </div>
-                            <p class="text-xs text-slate-500 mt-1">其中窗口大小为 past 252 交易日（约1年），消除不同市场历史时期的绝对数值中枢差异。</p>
+                            <p class="text-xs text-slate-400 mt-2">
+                                📌 <strong>通俗含义</strong>：若今日换手率分位数是 <strong>85%</strong>，代表今日活跃度比过去一年 <strong>85% 的交易日都要火热</strong>；0% 表示过去一年最低，100% 表示过去一年最高。
+                            </p>
                         </div>
 
-                        <div>
-                            <h3 class="font-semibold text-slate-800 text-xs uppercase tracking-wider mb-1.5">2. 综合情绪指标等权合成 (Equal Weighted Composite)</h3>
-                            <div class="bg-slate-900 text-slate-100 p-3.5 rounded-xl text-xs overflow-x-auto">
-                                $$	ext{Sentiment}_t = rac{1}{M_t} \sum_{i=1}^{M_t} 	ext{Percentile}_{i,t}$$
+                        <!-- Step 2 Formula Box -->
+                        <div class="bg-slate-900 text-slate-100 p-4 rounded-xl shadow-sm">
+                            <div class="text-emerald-400 font-semibold text-xs tracking-wider mb-2 uppercase">第二步：四大分位数 ➔ 等权平均合成综合指标 (0~100)</div>
+                            <div class="text-sm font-sans leading-relaxed py-1 overflow-x-auto">
+                                $$	ext{综合情绪指标} = rac{	ext{换手率分位} + 	ext{行业集中度分位} + 	ext{上涨个股分位} + 	ext{融资买入分位}}{4}$$
                             </div>
-                            <p class="text-xs text-slate-500 mt-1">综合指标取值区间 0 ~ 100，反映当前市场情绪在过去一年的相对水位。</p>
+                            <p class="text-xs text-slate-400 mt-2">
+                                📌 <strong>通俗含义</strong>：四大维度各占 <strong>25% 权重</strong> 简单平均，消除单项指标的短期噪点。（若遇融资数据尚未发布，自动对剩余 3 个有效指标取均值）。
+                            </p>
                         </div>
 
-                        <div class="grid grid-cols-3 gap-2 pt-2 text-center text-xs">
+                        <!-- Regime Cards -->
+                        <div class="grid grid-cols-3 gap-2 pt-1 text-center text-xs">
                             <div class="p-2.5 rounded-xl bg-red-50 border border-red-200">
-                                <div class="font-bold text-red-700">> 80 分位</div>
-                                <div class="text-red-600 mt-0.5">过热区间 / 警惕回撤</div>
+                                <div class="font-bold text-red-700">> 80 分位：过热区间</div>
+                                <div class="text-red-600 mt-0.5">全面亢奋 / 警惕短线见顶回撤</div>
                             </div>
                             <div class="p-2.5 rounded-xl bg-slate-100 border border-slate-200">
-                                <div class="font-bold text-slate-700">20 ~ 80 分位</div>
-                                <div class="text-slate-600 mt-0.5">中性震荡 / 结构市</div>
+                                <div class="font-bold text-slate-700">20 ~ 80 分位：中性区间</div>
+                                <div class="text-slate-600 mt-0.5">情绪常态 / 结构分化轮动</div>
                             </div>
                             <div class="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200">
-                                <div class="font-bold text-emerald-700">< 20 分位</div>
-                                <div class="text-emerald-600 mt-0.5">极度冷清 / 酝酿底部</div>
+                                <div class="font-bold text-emerald-700">< 20 分位：过冷区间</div>
+                                <div class="text-emerald-600 mt-0.5">极度悲观 / 往往孕育底部反弹</div>
                             </div>
                         </div>
                     </div>
