@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Generate index.html from sentiment analysis results with human-readable formulas, interactive zoom & linked ECharts
+Generate index.html from sentiment analysis results with exquisitely styled human-readable formulas, interactive zoom & linked ECharts
 """
 
 import pandas as pd
@@ -66,7 +66,7 @@ else:
     comp_badge_class = "bg-amber-100 text-amber-700"
     comp_badge_text = "⚖️ 中性偏暖"
 
-html_content = """<!DOCTYPE html>
+html_content = r"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -110,6 +110,27 @@ html_content = """<!DOCTYPE html>
         }
         .zoom-btn:active {
             transform: translateY(0px);
+        }
+        .formula-card {
+            background: linear-gradient(145deg, #0f172a, #1e293b);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .fraction-box {
+            display: inline-flex;
+            flex-direction: column;
+            vertical-align: middle;
+            text-align: center;
+            padding: 0 4px;
+        }
+        .fraction-numerator {
+            border-bottom: 2px solid rgba(129, 140, 248, 0.8);
+            padding-bottom: 4px;
+            font-weight: 500;
+        }
+        .fraction-denominator {
+            padding-top: 4px;
+            font-weight: 500;
+            color: #cbd5e1;
         }
     </style>
 </head>
@@ -357,7 +378,7 @@ html_content = """<!DOCTYPE html>
                 </div>
             </div>
 
-            <!-- Right: Human Readable Math & Formulas -->
+            <!-- Right: Human Readable Math & Formulas (HTML/CSS Formatted) -->
             <div class="glass-card rounded-2xl p-6 shadow-sm border border-slate-200 flex flex-col justify-between">
                 <div>
                     <h2 class="text-lg font-bold text-slate-900 mb-3 flex items-center">
@@ -368,23 +389,52 @@ html_content = """<!DOCTYPE html>
                     </h2>
 
                     <div class="space-y-4 text-sm text-slate-600">
-                        <!-- Step 1 Formula Box -->
-                        <div class="bg-slate-900 text-slate-100 p-4 rounded-xl shadow-sm">
-                            <div class="text-indigo-400 font-semibold text-xs tracking-wider mb-2 uppercase">第一步：单项指标 ➔ 滚动252日历史分位数 (0~100%)</div>
-                            <div class="text-sm font-sans leading-relaxed py-1 overflow-x-auto">
-                                $$\text{历史分位数 (\%)} = \frac{\text{过去252个交易日中数值小于今日的天数} + 0.5 \times \text{等于今日的天数}}{\text{过去252日有效交易总天数}} \times 100\%$$
+                        <!-- Step 1 Formula Card (Pure CSS Visual Equation) -->
+                        <div class="formula-card text-slate-100 p-4 rounded-xl shadow-md">
+                            <div class="text-indigo-400 font-semibold text-xs tracking-wider mb-2 flex items-center">
+                                <span class="w-2 h-2 rounded-full bg-indigo-400 inline-block mr-2"></span>
+                                第一步：单项指标 ➔ 滚动 252 日历史分位数 (0 ~ 100%)
                             </div>
+                            
+                            <!-- Visual Equation Box -->
+                            <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3 my-2 flex items-center justify-center flex-wrap gap-2 text-xs md:text-sm text-slate-100 font-sans">
+                                <span class="font-bold text-indigo-300">历史分位数 (%) =</span>
+                                <div class="fraction-box">
+                                    <div class="fraction-numerator text-indigo-200">
+                                        过去252日中数值 &lt; 今日的天数 + 0.5 × 等于今日的天数
+                                    </div>
+                                    <div class="fraction-denominator">
+                                        过去252个交易日有效总天数
+                                    </div>
+                                </div>
+                                <span class="font-bold text-indigo-300">× 100%</span>
+                            </div>
+
                             <p class="text-xs text-slate-400 mt-2">
-                                📌 <strong>通俗含义</strong>：若今日换手率分位数是 <strong>85%</strong>，代表今日活跃度比过去一年 <strong>85% 的交易日都要火热</strong>；0% 表示过去一年最低，100% 表示过去一年最高。
+                                📌 <strong>通俗含义</strong>：若今日换手率分位数为 <strong>85%</strong>，代表今日活跃度比过去一年 <strong>85% 的交易日都要火热</strong>；0% 表示过去一年最低，100% 表示过去一年最高。
                             </p>
                         </div>
 
-                        <!-- Step 2 Formula Box -->
-                        <div class="bg-slate-900 text-slate-100 p-4 rounded-xl shadow-sm">
-                            <div class="text-emerald-400 font-semibold text-xs tracking-wider mb-2 uppercase">第二步：四大分位数 ➔ 等权平均合成综合指标 (0~100)</div>
-                            <div class="text-sm font-sans leading-relaxed py-1 overflow-x-auto">
-                                $$\text{综合情绪指标} = \frac{\text{换手率分位} + \text{行业集中度分位} + \text{上涨个股分位} + \text{融资买入分位}}{4}$$
+                        <!-- Step 2 Formula Card (Pure CSS Visual Equation) -->
+                        <div class="formula-card text-slate-100 p-4 rounded-xl shadow-md">
+                            <div class="text-emerald-400 font-semibold text-xs tracking-wider mb-2 flex items-center">
+                                <span class="w-2 h-2 rounded-full bg-emerald-400 inline-block mr-2"></span>
+                                第二步：四大分位数 ➔ 等权平均合成综合指标 (0 ~ 100)
                             </div>
+
+                            <!-- Visual Equation Box -->
+                            <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3 my-2 flex items-center justify-center flex-wrap gap-2 text-xs md:text-sm text-slate-100 font-sans">
+                                <span class="font-bold text-emerald-300">综合情绪指标 =</span>
+                                <div class="fraction-box">
+                                    <div class="fraction-numerator text-emerald-200">
+                                        换手率分位 + 行业集中度分位 + 上涨个股分位 + 融资买入分位
+                                    </div>
+                                    <div class="fraction-denominator">
+                                        4 （有效子指标个数）
+                                    </div>
+                                </div>
+                            </div>
+
                             <p class="text-xs text-slate-400 mt-2">
                                 📌 <strong>通俗含义</strong>：四大维度各占 <strong>25% 权重</strong> 简单平均，消除单项指标的短期噪点。（若遇融资数据尚未发布，自动对剩余 3 个有效指标取均值）。
                             </p>
@@ -792,4 +842,4 @@ with open(output_html_root, 'w', encoding='utf-8') as f:
 with open(output_html_docs, 'w', encoding='utf-8') as f:
     f.write(html_content)
 
-print(f"Generated index.html successfully with human-readable formulas!")
+print(f"Generated index.html successfully with visual fraction cards!")
