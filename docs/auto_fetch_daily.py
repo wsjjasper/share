@@ -88,15 +88,16 @@ def spot_check_and_sync():
     for idx in range(len(df_excel)):
         d = df_excel.loc[idx, 'date_clean']
         curr_margin = df_excel.iloc[idx, 12]
-        if (pd.isna(curr_margin) or curr_margin == 0) and d in margin_map:
+        if (pd.isna(curr_margin) or curr_margin == 0 or curr_margin > 1) and d in margin_map:
             new_val = margin_map[d]
             total_amt = df_excel.iloc[idx, 6] # 万得全A总成交额
-            ratio = (new_val / total_amt) * 100 if total_amt > 0 else 0
+            ratio_decimal = (new_val / total_amt) if total_amt > 0 else 0
+            ratio_pct = ratio_decimal * 100
             df_excel.iloc[idx, 12] = new_val
-            df_excel.iloc[idx, 13] = ratio
-            df_excel.iloc[idx, 5] = ratio
+            df_excel.iloc[idx, 13] = ratio_pct
+            df_excel.iloc[idx, 5] = ratio_decimal
             updated_count += 1
-            print(f"     [补全] {d}: 填补融资买入额 {new_val:.2f} 亿元, 占总成交额比重 {ratio:.2f}%")
+            print(f"     [补全] {d}: 填补融资买入额 {new_val:.2f} 亿元, 占总成交额比重 {ratio_pct:.2f}%")
 
     if updated_count > 0:
         try:
