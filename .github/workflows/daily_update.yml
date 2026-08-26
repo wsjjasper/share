@@ -2,8 +2,11 @@ name: A-Share Sentiment Daily Auto-Update
 
 on:
   schedule:
-    # 每个交易日北京时间 20:00 (UTC 12:00) 自动执行
-    - cron: '0 12 * * 1-5'
+    # 交易日每天自动触发 3 次：
+    # 1. 北京时间 16:00 (UTC 08:00): 收盘后第一时间抓取大盘收盘与行情
+    # 2. 北京时间 20:00 (UTC 12:00): 官方两融数据发布后二次精准校准
+    # 3. 北京时间 23:00 (UTC 15:00): 夜间最终核验
+    - cron: '0 8,12,15 * * 1-5'
   workflow_dispatch: # 支持在 GitHub 网页端随时手动一键触发
 
 permissions:
