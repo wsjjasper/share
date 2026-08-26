@@ -151,8 +151,8 @@ for _, row in recent.iterrows():
 # ========================
 fig, axes = plt.subplots(3, 1, figsize=(16, 14), sharex=True)
 
-# 字体设置
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+# 字体设置 (兼容 Windows / Linux 云端运行)
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'WenQuanYi Micro Hei', 'Noto Sans CJK SC', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
 dates = output['日期']
