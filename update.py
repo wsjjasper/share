@@ -25,7 +25,7 @@ if sys.platform.startswith('win'):
     except Exception:
         pass
 
-WORKSPACE_DIR = r'D:\vscode_workspace\情绪指标'
+WORKSPACE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOCS_DIR = os.path.join(WORKSPACE_DIR, 'docs')
 
 def print_step(step_name):

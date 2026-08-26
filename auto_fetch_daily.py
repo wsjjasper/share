@@ -26,7 +26,7 @@ if sys.platform.startswith('win'):
     except Exception:
         pass
 
-WORKSPACE_DIR = r'D:\vscode_workspace\情绪指标'
+WORKSPACE_DIR = os.path.dirname(os.path.abspath(__file__))
 EXCEL_PATH = os.path.join(WORKSPACE_DIR, '副本万得全A.xlsx')
 
 headers_em = {

@@ -8,10 +8,12 @@ import json
 import os
 import shutil
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # Read excel results (with fallback)
-excel_path = r'D:\vscode_workspace\情绪指标\情绪指标_结果.xlsx'
+excel_path = os.path.join(BASE_DIR, '情绪指标_结果.xlsx')
 if not os.path.exists(excel_path):
-    excel_path = r'D:\vscode_workspace\情绪指标\情绪指标_结果_latest.xlsx'
+    excel_path = os.path.join(BASE_DIR, '情绪指标_结果_latest.xlsx')
 
 df = pd.read_excel(excel_path)
 cols = [
@@ -1018,8 +1020,10 @@ html_content = html_content.replace('LATEST_DATE', str(latest_date))
 html_content = html_content.replace('DATA_JSON_PLACEHOLDER', data_json)
 
 # Write to root index.html and docs/index.html
-output_html_root = r'D:\vscode_workspace\情绪指标\index.html'
-output_html_docs = r'D:\vscode_workspace\情绪指标\docs\index.html'
+output_html_root = os.path.join(BASE_DIR, 'index.html')
+output_html_docs = os.path.join(BASE_DIR, 'docs', 'index.html')
+
+os.makedirs(os.path.join(BASE_DIR, 'docs'), exist_ok=True)
 
 with open(output_html_root, 'w', encoding='utf-8') as f:
     f.write(html_content)

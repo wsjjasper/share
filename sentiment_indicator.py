@@ -16,13 +16,17 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # ========================
 # 1. 读取数据
 # ========================
-raw_path = r'D:\vscode_workspace\情绪指标\副本万得全A.xlsx'
+raw_path = os.path.join(BASE_DIR, '副本万得全A.xlsx')
 if not os.path.exists(raw_path):
-    print(f"错误: 未找到数据文件 {raw_path}")
-    sys.exit(1)
+    raw_path = os.path.join(BASE_DIR, '副本万得全A_latest.xlsx')
+    if not os.path.exists(raw_path):
+        print(f"错误: 未找到数据文件 {raw_path}")
+        sys.exit(1)
 
 df = pd.read_excel(raw_path)
 
@@ -118,13 +122,13 @@ output.columns = ['日期',
                    '综合情绪指标']
 
 # 保存Excel
-output_path = r'D:\vscode_workspace\情绪指标\情绪指标_结果.xlsx'
+output_path = os.path.join(BASE_DIR, '情绪指标_结果.xlsx')
 try:
     output.to_excel(output_path, index=False, float_format='%.2f')
     print(f"\n结果已保存至: {output_path}")
 except PermissionError:
     print(f"\n[警告] {output_path} 正在被 Excel 打开占用，正在尝试写入备份文件...")
-    backup_path = r'D:\vscode_workspace\情绪指标\情绪指标_结果_latest.xlsx'
+    backup_path = os.path.join(BASE_DIR, '情绪指标_结果_latest.xlsx')
     output.to_excel(backup_path, index=False, float_format='%.2f')
     print(f"已保存至备份文件: {backup_path}")
 
@@ -202,7 +206,7 @@ ax3.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
 plt.xticks(rotation=45)
 
 plt.tight_layout()
-chart_path = r'D:\vscode_workspace\情绪指标\情绪指标_图表.png'
+chart_path = os.path.join(BASE_DIR, '情绪指标_图表.png')
 plt.savefig(chart_path, dpi=150, bbox_inches='tight')
 print(f"\n图表已保存至: {chart_path}")
 plt.close()
