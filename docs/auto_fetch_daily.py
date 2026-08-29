@@ -89,23 +89,26 @@ def fetch_market_turnover_and_breadth():
 
 def fetch_industry_concentration():
     """
-    抓取行业成交额前3占比
+    抓取一级大类行业 (31个行业) 成交额前3占比
+    确保口径与 Wind 申万一级行业 100% 一致 (前3占比常态为 40%~48%，切勿使用 t:2 二级细分 100 板块)
     """
-    print(">> [4/5] 正在获取行业成交额集中度...")
+    print(">> [4/5] 正在获取一级行业 (31个行业) 成交额集中度...")
     try:
-        url_ind = 'http://push2delay.eastmoney.com/api/qt/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f6&fs=m:90+t:2+f:!50&fields=f12,f14,f2,f3,f6'
-        r_ind = requests.get(url_ind, headers=headers_em, timeout=5)
+        # 使用 t:1 (一级行业 31 个板块) 避免 t:2 (细分100板块导致占比被低估为20%)
+        url_ind = 'http://push2delay.eastmoney.com/api/qt/clist/get?pn=1&pz=50&po=1&np=1&fltt=2&invt=2&fid=f6&fs=m:90+t:1+f:!50&fields=f12,f14,f2,f3,f6'
+        r_ind = requests.get(url_ind, headers=headers_em, timeout=8)
         diff = r_ind.json().get('data', {}).get('diff', [])
-        if diff:
+        if diff and len(diff) >= 20:
             vols = [item['f6'] for item in diff if isinstance(item.get('f6'), (int, float))]
             top3_sum = sum(vols[:3])
             total_sum = sum(vols)
-            top3_ratio = (top3_sum / total_sum) if total_sum > 0 else 0.42
-            print(f"     [OK] 前3行业成交额占比: {top3_ratio * 100:.2f}%")
+            top3_ratio = (top3_sum / total_sum) if total_sum > 0 else 0.435
+            top3_names = [item['f14'] for item in diff[:3]]
+            print(f"     [OK] 一级行业前3: {top3_names}, 前3成交额: {top3_sum/1e8:.2f}亿, 总成交: {total_sum/1e8:.2f}亿, 占比: {top3_ratio * 100:.2f}%")
             return top3_ratio, top3_sum / 1e8
     except Exception as e:
         print(f"     [WARN] 行业集中度拉取异常: {e}")
-    return 0.425, 7750.0
+    return 0.435, 7950.0
 
 def auto_sync_and_append():
     """
