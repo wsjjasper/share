@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-用申万一级行业数据回填「成交额前三行业占比」(一次性脚本)
+用申万一级行业数据回填「换手率」与「成交额前三行业占比」(一次性脚本)
 
-背景: 2026-08-26 起自动追加的行, 该列曾误用东财 t:1 地域板块(省份), 现已置空。
-本脚本改用申万宏源的一级行业口径 —— 与 Excel 里 2026-08-25 之前的 Wind
-历史数据同口径(申万一级 31 个行业), 因此不会引入量纲断层。
+背景:
+- 行业集中度: 2026-08-26 起自动追加的行曾误用东财 t:1 地域板块(省份), 已置空。
+- 换手率:     同期的行写的是硬编码常量 1.48, 并非真实数据。
 
-数据源: akshare.index_analysis_daily_sw(symbol="一级行业")
-        每行含 指数代码/指数名称/发布日期/成交额占比, 前3名占比相加即为目标值。
+两项均改由申万宏源提供, 与 Excel 中 2026-08-25 之前的 Wind 历史同口径。
+抓取复用 auto_fetch_daily.fetch_sw_daily_metrics —— 与日常管线共用一份实现。
+
+安全措施: 写入前必须先与重叠期的 Wind 历史逐日比对, 任一列不达标即整体拒绝写入。
 
 用法:
-    python backfill_industry_sw.py                 # 只校验, 不写入 (默认)
-    python backfill_industry_sw.py --apply         # 校验通过后写入 Excel
+    python backfill_industry_sw.py                  # 只校验+预览, 不写入 (默认)
+    python backfill_industry_sw.py --apply          # 校验通过后写入
     python backfill_industry_sw.py --validate-days 250
 """
 
@@ -25,67 +27,83 @@ import pandas as pd
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 EXCEL_PATH = os.path.join(BASE_DIR, '副本万得全A.xlsx')
 
-COL_DATE, COL_RATIO, COL_TOTAL_AMT, COL_TOP3_AMT = 1, 3, 6, 7
+COL_DATE, COL_TURNOVER, COL_RATIO, COL_TOTAL_AMT, COL_TOP3_AMT = 1, 2, 3, 6, 7
 
-# 校验阈值: 与 Wind 历史数据的一致性要求
-MAX_MEAN_ABS_DIFF = 3.0   # 平均绝对偏差上限 (百分点)
-MIN_CORRELATION = 0.80    # 相关系数下限
+# 每列的校验口径。excel_scale: 把 Excel 存的值换算成对比单位(%)的系数
+CHECKS = [
+    {'key': 'top3_ratio',    'col': COL_RATIO,    'name': '行业集中度',
+     'excel_scale': 100.0, 'sw_scale': 100.0, 'max_mad': 3.0,  'min_corr': 0.80},
+    {'key': 'turnover_rate', 'col': COL_TURNOVER, 'name': '换手率',
+     'excel_scale': 1.0,   'sw_scale': 1.0,   'max_mad': 0.5,  'min_corr': 0.80},
+]
 
 
-def fetch_sw_top3(start_date, end_date):
-    """
-    返回 DataFrame[日期, top3_ratio, 明细]
+def fetch_sw(start_date, end_date):
+    """复用日常管线的抓取实现, 避免两处口径各自漂移。"""
+    from auto_fetch_daily import fetch_sw_daily_metrics
 
-    抓取与单位判定复用 auto_fetch_daily.fetch_sw_industry_top3 —— 两处共用一份实现,
-    避免日常管线与回填脚本的口径各自漂移。
-    """
-    from auto_fetch_daily import fetch_sw_industry_top3
-
-    sw = fetch_sw_industry_top3(start_date, end_date)
+    sw = fetch_sw_daily_metrics(start_date, end_date)
     if not sw:
         raise RuntimeError("申万接口未返回可用数据")
-
-    out = pd.DataFrame(
-        [{'日期': pd.Timestamp(k), 'top3_ratio': v[0], '明细': v[1]} for k, v in sw.items()]
-    ).sort_values('日期').reset_index(drop=True)
-    print(f"     [OK] 共 {len(out)} 个交易日可用于校验与回填")
-    return out
+    print(f"     [OK] 共 {len(sw)} 个交易日可用于校验与回填")
+    return sw
 
 
-def validate(sw, df_excel, n_days):
-    """在重叠期把申万口径与 Excel 里的 Wind 历史值逐日比对。"""
-    d = pd.to_datetime(df_excel.iloc[:, COL_DATE]).dt.normalize()
-    wind = pd.DataFrame({'日期': d, 'wind': df_excel.iloc[:, COL_RATIO]}).dropna()
-    merged = wind.merge(sw[['日期', 'top3_ratio']], on='日期', how='inner')
-    merged = merged.tail(n_days)
+def validate(sw, df, n_days, before):
+    """
+    在重叠期把申万口径与 Excel 里的 Wind 历史值逐日比对。
 
-    if len(merged) < 20:
-        print(f"[失败] 重叠交易日仅 {len(merged)} 个, 不足以校验口径")
-        return False, merged
+    只取 before(回填起始日) 之前的行: 回填区间内的数值要么是已置空的缺失值,
+    要么是硬编码占位常量(换手率 1.48), 都不是 Wind 真值 —— 放进校验窗口会
+    污染结果, 既可能造成误判失败, 也可能在占位值恰好接近时造成误判通过。
+    """
+    d = pd.to_datetime(df.iloc[:, COL_DATE]).dt.normalize()
+    before = pd.Timestamp(before)
+    all_ok = True
 
-    merged['diff'] = (merged['top3_ratio'] - merged['wind']) * 100
-    mean_abs = merged['diff'].abs().mean()
-    corr = merged['top3_ratio'].corr(merged['wind'])
-    bias = merged['diff'].mean()
+    for chk in CHECKS:
+        rows = []
+        for i in df.index:
+            if d[i] >= before:
+                continue
+            key = d[i].strftime('%Y-%m-%d')
+            ev = df.iloc[i, chk['col']]
+            if key not in sw or pd.isna(ev):
+                continue
+            sv = sw[key][chk['key']]
+            if sv is None:
+                continue
+            rows.append({'日期': d[i], 'wind': ev * chk['excel_scale'], 'sw': sv * chk['sw_scale']})
 
-    print(f"\n口径校验 (重叠 {len(merged)} 个交易日, {merged['日期'].min().date()} ~ {merged['日期'].max().date()})")
-    print(f"  Wind 均值      : {merged['wind'].mean() * 100:.2f}%")
-    print(f"  申万均值       : {merged['top3_ratio'].mean() * 100:.2f}%")
-    print(f"  系统性偏差     : {bias:+.2f} 个百分点")
-    print(f"  平均绝对偏差   : {mean_abs:.2f} 个百分点   (阈值 <= {MAX_MEAN_ABS_DIFF})")
-    print(f"  最大绝对偏差   : {merged['diff'].abs().max():.2f} 个百分点")
-    print(f"  相关系数       : {corr:.4f}   (阈值 >= {MIN_CORRELATION})")
+        m = pd.DataFrame(rows).tail(n_days)
+        print(f"\n口径校验 · {chk['name']}")
+        if len(m) < 20:
+            print(f"  [失败] 可比对的交易日仅 {len(m)} 个, 不足以校验")
+            all_ok = False
+            continue
 
-    ok = (mean_abs <= MAX_MEAN_ABS_DIFF) and (corr >= MIN_CORRELATION)
-    print(f"  结论: {'通过 —— 申万与 Wind 同口径, 可安全回填' if ok else '未通过 —— 口径不一致, 拒绝写入'}")
-    return ok, merged
+        diff = m['sw'] - m['wind']
+        mad, corr, bias = diff.abs().mean(), m['sw'].corr(m['wind']), diff.mean()
+        print(f"  区间           : {m['日期'].min().date()} ~ {m['日期'].max().date()}  ({len(m)} 个交易日)")
+        print(f"  Wind 均值      : {m['wind'].mean():.2f}%")
+        print(f"  申万均值       : {m['sw'].mean():.2f}%")
+        print(f"  系统性偏差     : {bias:+.2f} 个百分点")
+        print(f"  平均绝对偏差   : {mad:.2f} 个百分点   (阈值 <= {chk['max_mad']})")
+        print(f"  最大绝对偏差   : {diff.abs().max():.2f} 个百分点")
+        print(f"  相关系数       : {corr:.4f}   (阈值 >= {chk['min_corr']})")
+        ok = (mad <= chk['max_mad']) and (corr >= chk['min_corr'])
+        print(f"  结论: {'通过' if ok else '未通过'}")
+        all_ok = all_ok and ok
+
+    print(f"\n总体: {'全部通过 —— 可安全回填' if all_ok else '存在未通过项 —— 拒绝写入'}")
+    return all_ok
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--start', default='2026-08-26', help='回填起始日 (含)')
-    ap.add_argument('--end', default='2026-09-16', help='回填结束日 (含)')
-    ap.add_argument('--validate-days', type=int, default=120, help='用多少个重叠交易日校验口径')
+    ap.add_argument('--start', default='2026-08-26')
+    ap.add_argument('--end', default='2026-09-16')
+    ap.add_argument('--validate-days', type=int, default=120)
     ap.add_argument('--apply', action='store_true', help='校验通过后真正写入 Excel')
     args = ap.parse_args()
 
@@ -96,52 +114,47 @@ def main():
     df = pd.read_excel(EXCEL_PATH)
     d = pd.to_datetime(df.iloc[:, COL_DATE]).dt.normalize()
 
-    # 拉取范围要同时覆盖回填区间与校验区间
-    fetch_start = (pd.Timestamp(args.start) - pd.Timedelta(days=args.validate_days * 2)).strftime('%Y-%m-%d')
-    sw = fetch_sw_top3(fetch_start, args.end)
+    fetch_start = (pd.Timestamp(args.start)
+                   - pd.Timedelta(days=args.validate_days * 2)).strftime('%Y-%m-%d')
+    sw = fetch_sw(fetch_start, args.end)
 
-    ok, _ = validate(sw, df, args.validate_days)
+    ok = validate(sw, df, args.validate_days, args.start)
 
-    target = (d >= args.start) & (d <= args.end)
-    print(f"\n待回填区间 {args.start} ~ {args.end}: Excel 内 {target.sum()} 行, "
-          f"其中当前为空 {df.loc[target, df.columns[COL_RATIO]].isna().sum()} 行")
-
-    sw_map = sw.set_index('日期')
-    preview = []
-    for i in df.index[target]:
-        day = d[i]
-        if day in sw_map.index:
-            r = sw_map.loc[day]
-            preview.append((day.strftime('%Y-%m-%d'), r['top3_ratio'], r['明细']))
-        else:
-            preview.append((day.strftime('%Y-%m-%d'), None, '申万无此交易日数据'))
-
+    target = df.index[(d >= args.start) & (d <= args.end)]
+    print(f"\n待回填区间 {args.start} ~ {args.end}: Excel 内 {len(target)} 行")
     print("\n回填预览:")
-    for day, ratio, detail in preview:
-        print(f"  {day}  {'—' if ratio is None else '%.2f%%' % (ratio * 100)}   {detail}")
+    for i in target:
+        key = d[i].strftime('%Y-%m-%d')
+        if key not in sw:
+            print(f"  {key}  申万无此交易日数据, 跳过")
+            continue
+        e = sw[key]
+        tr = '—' if e['turnover_rate'] is None else f"{e['turnover_rate']:.2f}%"
+        print(f"  {key}  换手率 {tr:>7}   行业前3 {e['top3_ratio'] * 100:.2f}%   {e['top3_detail']}")
 
     if not args.apply:
         print("\n[未写入] 这是校验模式。确认无误后加 --apply 执行写入。")
         return
-
     if not ok:
         print("\n[拒绝写入] 口径校验未通过。")
         sys.exit(2)
 
-    n = 0
-    for i in df.index[target]:
-        day = d[i]
-        if day not in sw_map.index:
+    n_ratio = n_tr = 0
+    for i in target:
+        key = d[i].strftime('%Y-%m-%d')
+        if key not in sw:
             continue
-        ratio = float(sw_map.loc[day, 'top3_ratio'])
-        df.iat[i, COL_RATIO] = ratio
+        e = sw[key]
+        df.iat[i, COL_RATIO] = e['top3_ratio']
         total_amt = df.iat[i, COL_TOTAL_AMT]
-        # 第7列(前三行业合计,亿元)由占比 × 当日总成交额导出
-        df.iat[i, COL_TOP3_AMT] = ratio * total_amt if pd.notna(total_amt) else np.nan
-        n += 1
+        df.iat[i, COL_TOP3_AMT] = (e['top3_ratio'] * total_amt) if pd.notna(total_amt) else np.nan
+        n_ratio += 1
+        if e['turnover_rate'] is not None:
+            df.iat[i, COL_TURNOVER] = e['turnover_rate']
+            n_tr += 1
 
     df.to_excel(EXCEL_PATH, index=False)
-    print(f"\n[OK] 已回填 {n} 行并写入 {EXCEL_PATH}")
+    print(f"\n[OK] 已回填 行业集中度 {n_ratio} 行 / 换手率 {n_tr} 行, 写入 {EXCEL_PATH}")
     print("     接着运行 python update.py 重算分位数并发布。")
 
 

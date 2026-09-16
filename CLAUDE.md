@@ -93,21 +93,30 @@ akshare except one: `stock_zh_index_daily` for the trading calendar, `stock_marg
 for official margin data, `index_analysis_daily_sw` for industry concentration, and Tencent
 `qt.gtimg.cn` for aggregate turnover. Two things follow:
 
-- **New rows are partly hardcoded placeholders.** When appending a fresh trading day it writes
-  literal constants for turnover rate (1.48), advancing-stock share (0.585 / 58.50) and advancing
-  count (3240) because no free source is wired up for them. Only turnover, industry concentration
-  and margin figures are actually fetched. `fetch_market_turnover_and_breadth` still returns a
-  hardcoded 18220.0 亿 when its HTTP call fails, so a network failure there produces
-  plausible-looking wrong data rather than an error; the industry fetch no longer does this.
+- **Missing inputs are left `NaN`, never filled with a constant.** Every sub-indicator on a new
+  row is now fetched. The one hardcoded fallback left is `fetch_market_turnover_and_breadth`,
+  which returns 18220.0 亿 when its HTTP call fails — a network failure there still produces
+  plausible-looking wrong data rather than an error. (Rows appended before 2026-09-16 carry
+  literal constants — turnover rate 1.48, advancing share 0.585 / 58.50, advancing count 3240 —
+  from when no source was wired up; `backfill_industry_sw.py` replaces the turnover ones.)
 - **Self-repair pass.** Before appending, it walks every existing row and overwrites columns
   5/12/13 from the official akshare margin table whenever the stored value is NaN, 0, or differs
   by more than 1.0 亿. This is what makes the same-day estimate converge to the official number
   across the three daily CI runs.
 
-Industry concentration comes from 申万宏源 via `fetch_sw_industry_top3(start, end)`, which wraps
-akshare's `index_analysis_daily_sw(symbol="一级行业", start_date, end_date)`. That endpoint returns
-one row per industry per day over a date range and carries a `成交额占比` column, so the top-3
-share is a sum of three numbers — no denominator to assemble and no per-board request fan-out.
+Two of the four sub-indicators come from 申万宏源 through a single call.
+`fetch_sw_daily_metrics(start, end)` wraps akshare's
+`index_analysis_daily_sw(symbol="一级行业", start_date, end_date)`, which returns one row per
+industry per day over a date range, and derives both:
+
+- **Industry concentration** — the response carries a `成交额占比` column, so the top-3 share is a
+  sum of three numbers; no denominator to assemble and no per-board request fan-out.
+- **Whole-market turnover rate** — the same rows carry `换手率` and `流通市值`, and the 31 primary
+  industries partition the whole A-share market, so
+  `Σ(换手率ᵢ × 流通市值ᵢ) / Σ(流通市值ᵢ)` is algebraically `Σ(成交额ᵢ) / Σ(流通市值ᵢ)`, the
+  market-wide turnover rate. It costs no extra request and inherits the same history and repair
+  path as the industry column. Its unit is auto-detected too: a median outside 0.001–20 is
+  rejected, and a median below 0.2 is treated as a decimal and scaled by 100.
 
 Three properties matter:
 
@@ -120,9 +129,17 @@ Three properties matter:
 - **It never substitutes a constant.** If 申万 has not published yet, or returns fewer than
   `SW_MIN_INDUSTRIES` (25) rows for a day, or its `成交额占比` sums to neither ~1 nor ~100 per day
   (the unit auto-detection), the fetch returns nothing and the row is left `NaN`. A repair pass in
-  `auto_sync_and_append` then refills any `NaN` industry cell dated within
+  `auto_sync_and_append` then refills any `NaN` industry or turnover-rate cell dated within
   `SW_REPAIR_LOOKBACK_DAYS` (7) on a later run — the same shape as the margin self-repair, and the
-  reason the three daily CI runs matter for this column too.
+  reason the three daily CI runs matter for these columns too.
+
+**Advancing-stock share has no historical source.** `fetch_market_breadth` counts
+`涨跌幅 > 0` over `stock_zh_a_spot_em`, a whole-market snapshot with no date parameter — nothing in
+akshare returns market breadth for a past date. Two consequences: the value is only written when
+the date being appended is the newest closed trading day (`all_trade_dates[-1]`), so a run
+catching up on several days leaves the older ones `NaN` rather than repeating one figure across
+them; and the repair pass cannot fill it, so a trading day missed by all three CI runs stays
+`NaN` permanently. The fetch also rejects a snapshot carrying fewer than 3000 stocks.
 
 **Caliber history of this column.** Rows through 2026-08-25 are Wind's own industry figures
 (mean 36.76%). 2026-08-26 to 2026-09-16 were fetched from Eastmoney `fs=m:90+t:1`, the
@@ -134,22 +151,25 @@ industry (~86 boards, top-3 ≈ 20%, far finer than 申万一级), `t:3` concept
 
 ## Backfilling history: `backfill_industry_sw.py`
 
-A one-off script for filling stretches of the industry column older than the
-`SW_REPAIR_LOOKBACK_DAYS` window the daily pipeline covers. It imports `fetch_sw_industry_top3`
-from `auto_fetch_daily.py` rather than keeping its own copy, so both read the same source through
-the same code.
+A one-off script for filling stretches of the industry-concentration and turnover-rate columns
+older than the `SW_REPAIR_LOOKBACK_DAYS` window the daily pipeline covers. It imports
+`fetch_sw_daily_metrics` from `auto_fetch_daily.py` rather than keeping its own copy, so both read
+the same source through the same code.
 
-The script refuses to write unless the values it computes agree with the Wind column over an
-overlap window (mean absolute deviation ≤ 3 percentage points and correlation ≥ 0.80, both
-configurable at the top of the file). Run it with no flags to validate and preview; `--apply`
+It refuses to write unless **both** columns agree with the Wind history: per-column thresholds
+live in the `CHECKS` list at the top of the file (industry ≤ 3 percentage points mean absolute
+deviation, turnover rate ≤ 0.5, correlation ≥ 0.80 for both), and any column failing rejects the
+whole write. The comparison window covers only rows dated **before** `--start`: inside the
+backfill range the Excel holds either voided `NaN`s or the 1.48 turnover placeholder, and letting
+those into the window both breaks a legitimate check and could pass a bad one when a placeholder
+happens to sit near the real value. Run it with no flags to validate and preview; `--apply`
 writes. Column 7 (前三行业合计) is derived as ratio × column 6, since the source gives only the
 share.
 
 Run its validation before trusting the daily path: the pipeline's repair pass fills recent `NaN`
 industry cells automatically and has no validation gate of its own.
 
-`index_analysis_daily_sw(symbol="市场表征")` also carries a `换手率` column, which is a candidate
-for replacing the hardcoded 1.48 turnover-rate placeholder.
+
 
 ## `_latest.xlsx` fallback trap
 
