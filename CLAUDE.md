@@ -127,6 +127,31 @@ that still looks plausible. On any fetch failure the function carries forward th
 day's ratio (passed in by the caller) instead of returning a hardcoded constant — a fixed magic
 number becomes an extreme outlier the moment the caliber changes, pinning the percentile to 0 or 100.
 
+## Historical industry concentration: the 申万 source
+
+`backfill_industry_sw.py` (one-off script, not part of the pipeline) fills the industry column
+from 申万宏源 rather than Eastmoney, via akshare's `index_analysis_daily_sw(symbol="一级行业",
+start_date, end_date)`. That endpoint returns one row per industry per day over a date range and
+carries a `成交额占比` column, so the top-3 share is a sum of three numbers — no denominator to
+assemble, and no per-board request fan-out. It matters for two reasons Eastmoney cannot cover:
+
+- **It has history.** Eastmoney's `clist` endpoint used by `auto_fetch_daily.py` returns only a
+  current snapshot, so past days can never be reconstructed from it.
+- **It is the same caliber as the Wind column** — 申万一级, 31 industries — so backfilled values
+  belong in the same series as the pre-2026-08-26 history instead of opening a third caliber.
+
+The script refuses to write unless the values it computes agree with the Wind column over an
+overlap window (mean absolute deviation ≤ 3 percentage points and correlation ≥ 0.80, both
+configurable at the top of the file). It also auto-detects whether `成交额占比` arrives as a
+percentage or a decimal by checking whether each day's 31 values sum to ~100 or ~1, and aborts if
+neither. Run it with no flags to validate and preview; `--apply` writes. Column 7 (前三行业合计)
+is derived as ratio × column 6, since the source gives only the share.
+
+If its validation passes, the daily fetch in `auto_fetch_daily.py` should move from Eastmoney
+`t:2` to this same 申万 source — that removes the caliber break described above rather than
+managing it. `index_analysis_daily_sw(symbol="市场表征")` also carries a `换手率` column, which is
+a candidate for replacing the hardcoded 1.48 turnover-rate placeholder.
+
 ## `_latest.xlsx` fallback trap
 
 Every Excel write is wrapped in a `PermissionError` handler (the author keeps the files open in
