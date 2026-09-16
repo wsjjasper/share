@@ -118,25 +118,58 @@ industry per day over a date range, and derives both:
   path as the industry column. Its unit is auto-detected too: a median outside 0.001–20 is
   rejected, and a median below 0.2 is treated as a decimal and scaled by 100.
 
-**The fetch has to defend itself.** `index_analysis_daily_sw` paginates 50 rows per request
-internally and passes no `timeout` to any of them, so a rate-limited or stalled 申万 server blocks
-the whole script forever — a 9-month range is ~109 sequential requests, and one hang ends the run
-with no error. `fetch_sw_daily_metrics` therefore splits the range into `SW_CHUNK_DAYS` (45) day
-chunks and calls `_sw_fetch_raw` per chunk, which retries `SW_MAX_RETRY` (3) times with 2s/4s
-backoff inside `_request_timeout`, a context manager that patches `requests.Session.request` to
-fill in `SW_FETCH_TIMEOUT` ((10, 30)) whenever a caller passes none, and restores the original on
-exit so the patch cannot leak into the pipeline's other akshare calls. **`socket.setdefaulttimeout`
-does not work here** and was removed: urllib3 runs `sock.settimeout(self.timeout)` unconditionally
+**The 申万 fetch does not go through akshare.** `index_analysis_daily_sw` used to hang forever.
+Measured root cause (2026-09-16): TCP to `www.swsresearch.com` connects in 0.2s every time, but the
+**TLS handshake succeeds only about 1 time in 4** — the rest stall indefinitely. akshare opens a
+*new connection per page* via module-level `requests.get` and passes no `timeout` anywhere, so a
+9-month range is ~110 independent handshakes and any one of them blocks the whole script with no
+error. It was never rate limiting.
+
+`_sw_fetch_raw` therefore calls the endpoint directly (`SW_API_URL`), reusing one module-level
+keep-alive `requests.Session` (`_sw_session`) for the entire process: the handshake is gambled on
+**once**, and every page afterwards rides the established connection at 0.4–0.5s. `SW_PAGE_SIZE` is
+200 rather than akshare's 50, cutting page count by 4×. `_sw_get_page` retries `SW_MAX_RETRY` (8)
+times per page with a short `SW_FETCH_TIMEOUT` ((4, 30)) — the connect timeout is deliberately small
+because a handshake either lands in 0.2s or never, so failing fast and re-rolling is cheaper than
+waiting. Measured effect: a 12-trading-day range went from hanging forever to **1.3s**, and 5
+consecutive pages ran with 0 failures. `verify=False` is required (the cert chain does not validate
+locally, same as akshare), so `urllib3.disable_warnings` is called at import.
+
+Responses are renamed to akshare's Chinese column names via `SW_FIELD_MAP` (copied from
+`akshare/index/index_research_sw.py`), so everything downstream is unchanged. `fetch_sw_daily_metrics`
+still splits the range into `SW_CHUNK_DAYS` (90) day chunks for progress visibility, concatenating
+and de-duplicating on `(发布日期, 指数名称)`: an overlap would double a day's `成交额占比` sum and
+break the unit auto-detection below.
+
+`_request_timeout` remains, but now guards the *other* akshare calls (`stock_zh_index_daily`,
+`stock_margin_account_info`, `stock_zh_a_spot_em`) with `AK_FETCH_TIMEOUT` ((10, 60)) — they have the
+same no-timeout flaw and the pipeline runs unattended in CI. It patches `requests.Session.request` to
+fill in a timeout when a caller passes none and restores it on exit. **`socket.setdefaulttimeout` does
+not work for this** and was removed: urllib3 runs `sock.settimeout(self.timeout)` unconditionally
 after connecting (`connection.py:439/560`), and with requests passing `timeout=None` that call
 explicitly returns the socket to blocking mode, overriding the global default. Only a patch at the
-requests layer holds. Chunk results are concatenated and de-duplicated on
-`(发布日期, 指数名称)`: an overlap would double a day's `成交额占比` sum and break the unit
-auto-detection below.
+requests layer holds.
 
 Three properties matter:
 
-- **It is the same caliber as the Wind history** — 申万一级, 31 industries — so fetched values
-  belong in the same series as the pre-2026-08-26 rows.
+- **It is NOT the same caliber as the Wind history.** This was assumed and is now measured false.
+  Over the 120-trading-day overlap (2026-03-04 ~ 2026-08-25), 申万 runs systematically high on both
+  derived columns, so its values must **not** be spliced into the pre-2026-08-26 rows:
+
+  | column | 申万 mean | Wind mean | bias | 申万/Wind | corr |
+  | --- | --- | --- | --- | --- | --- |
+  | 行业集中度 | 51.88% | 43.84% | +8.04pp | 1.19–1.23× | 0.9918 |
+  | 换手率 | 5.03% | 1.87% | +3.16pp | 2.57–2.81× | 0.8654 |
+
+  The correlations are high — it tracks the same signal — but the level is on a different basis
+  (申万's turnover rate is almost certainly free-float-denominated, and its `成交额占比` is
+  normalized within 申万 coverage rather than over the whole market). Because each sub-indicator is
+  a **rolling 252-day percentile of its own column**, a level shift is not a cosmetic offset: it
+  pegs the new days at the top of their own window. Measured on the 6 rows that reached production,
+  the industry percentile was inflated by **+35 to +61 points**; writing 申万 turnover unadjusted
+  produces a percentile of **99.8**. Reconstructing a Wind-caliber figure from 申万 absolutes does
+  not work either — `成交量 × 均价` overshoots Wind's market turnover by ~1.4× because `均价` is an
+  index-level mean price.
 - **It is queried by date range**, so each trading day gets its own figure. The previous Eastmoney
   `clist` endpoint returned only a current snapshot, and the fetch sat outside the date loop, so
   one value was written to every date appended in that run (2026-08-27 and 08-28 in the committed

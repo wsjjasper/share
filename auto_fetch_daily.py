@@ -14,10 +14,15 @@ import json
 import contextlib
 import time
 import requests
+import urllib3
 import numpy as np
 import pandas as pd
 import akshare as ak
 from datetime import datetime
+
+# 申万站点的证书链在本地校验不过 (akshare 原样也是 verify=False), 只能关校验;
+# 关掉随之而来的每请求一条的 InsecureRequestWarning 刷屏。
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 确保控制台输出 UTF-8 编码
 if sys.platform.startswith('win'):
@@ -32,13 +37,44 @@ EXCEL_PATH = os.path.join(WORKSPACE_DIR, '副本万得全A.xlsx')
 
 # 申万一级共 31 个行业; 返回数少于此值视为接口异常, 拒绝使用
 SW_MIN_INDUSTRIES = 25
-# akshare 的 index_analysis_daily_sw 内部按每页 50 条串行翻页, 且每个 requests.get
-# 都不带 timeout —— 服务端一旦限流或挂起就会永久阻塞, 无法自行退出。
-# 对策: 把日期区间切成小块分次请求(每块页数少, 卡住只损失一块), 加重试,
-# 并在 requests 层注入默认超时(见 _request_timeout)。
-SW_FETCH_TIMEOUT = (10, 30)    # (连接, 读取) 秒
-SW_CHUNK_DAYS = 45       # 每次请求覆盖的自然日数
-SW_MAX_RETRY = 3
+# akshare 其余接口同样全程不传 timeout, 无人值守的 CI 里一次挂起就是整轮卡死。
+# 用 _request_timeout 兜住(申万那条路已自己直连, 不走这里)。
+AK_FETCH_TIMEOUT = (10, 60)    # (连接, 读取) 秒
+
+# --- 为什么不用 akshare.index_analysis_daily_sw ---
+# 实测 (2026-09-16) 到申万的 TCP 连接每次都是 0.2s 建成, 但 TLS 握手大约只有 1/4
+# 的概率能成功, 其余会一直卡在握手上。akshare 每翻一页都用模块级 requests.get
+# 新建一条连接, 一个 9 个月的区间 ≈110 页 = 110 次独立握手, 且它全文不带 timeout,
+# 任何一次卡住就是永久阻塞 —— 这才是"抓取永久挂起"的真正原因, 不是限流。
+# 对策: 自己直连, 全程复用一条 Session。握手只赌一次, 成功后连接复用,
+# 后续每页 0.4~0.5s (实测 5 页共 2.9s, 0 次失败)。再把每页 50 条提到 200 条,
+# 页数直接降一个量级。响应字段与 akshare 的中文列名一一对应, 上层逻辑不用改。
+SW_API_URL = ("https://www.swsresearch.com/institute-sw/api/index_analysis/"
+              "index_analysis_report/")
+SW_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+         "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+SW_PAGE_SIZE = 200
+# 连接超时取小: 握手要么 0.2s 成功, 要么就是卡住, 等久了没有意义, 快速失败再重试更划算
+SW_FETCH_TIMEOUT = (4, 30)    # (连接, 读取) 秒
+SW_CHUNK_DAYS = 90       # 每次请求覆盖的自然日数
+SW_MAX_RETRY = 8         # 每页重试次数; 失败 4s 内可判定, 所以重试很便宜
+# akshare 的中文列名映射 (取自 akshare/index/index_research_sw.py), 保持下游一致
+SW_FIELD_MAP = {
+    'swindexcode': '指数代码',
+    'swindexname': '指数名称',
+    'bargaindate': '发布日期',
+    'closeindex': '收盘指数',
+    'bargainamount': '成交量',
+    'markup': '涨跌幅',
+    'turnoverrate': '换手率',
+    'pe': '市盈率',
+    'pb': '市净率',
+    'meanprice': '均价',
+    'bargainsumrate': '成交额占比',
+    'negotiablessharesum1': '流通市值',
+    'negotiablessharesum2': '平均流通市值',
+    'dp': '股息率',
+}
 # 行业集中度自动回补的回看天数。申万当日数据可能盘后延迟发布, 由当天后续几次
 # CI 或次日补上。仅覆盖发布延迟, 批量历史回填请用 backfill_industry_sw.py
 SW_REPAIR_LOOKBACK_DAYS = 7
@@ -49,7 +85,8 @@ def get_all_market_trade_dates():
     """
     print(">> [1/5] 正在从大盘日线获取最新收盘交易日日历...")
     try:
-        df_sh = ak.stock_zh_index_daily(symbol='sh000001')
+        with _request_timeout(AK_FETCH_TIMEOUT):
+            df_sh = ak.stock_zh_index_daily(symbol='sh000001')
         df_sh['date_clean'] = pd.to_datetime(df_sh['date']).dt.strftime('%Y-%m-%d')
         trade_dates = df_sh['date_clean'].tolist()
         print(f"     [OK] 获取到最新收盘交易日: {trade_dates[-1]}")
@@ -64,7 +101,8 @@ def fetch_margin_summary_table():
     """
     print(">> [2/5] 正在拉取官方两融历史数据库...")
     try:
-        df_margin = ak.stock_margin_account_info()
+        with _request_timeout(AK_FETCH_TIMEOUT):
+            df_margin = ak.stock_margin_account_info()
         df_margin['date_clean'] = pd.to_datetime(df_margin['日期']).dt.strftime('%Y-%m-%d')
         df_margin['margin_buy_amt'] = pd.to_numeric(df_margin['融资买入额'], errors='coerce')
         latest_row = df_margin.iloc[-1]
@@ -122,24 +160,79 @@ def _request_timeout(timeout):
         requests.Session.request = orig
 
 
+_SW_SESSION = None
+
+
+def _sw_session():
+    """
+    全局复用一条到申万的 Session。
+
+    握手不稳是本接口唯一的痛点(见顶部常量处的说明), 连接一旦建立就很稳,
+    所以整个进程只应该赌这一次握手, 之后所有分块、所有页都走同一条连接。
+    """
+    global _SW_SESSION
+    if _SW_SESSION is None:
+        s = requests.Session()
+        s.headers.update({'User-Agent': SW_UA, 'Connection': 'keep-alive'})
+        s.verify = False
+        _SW_SESSION = s
+    return _SW_SESSION
+
+
+def _sw_get_page(start_date, end_date, page):
+    """取申万区间数据的某一页, 失败重试; 返回响应里的 data 字段。"""
+    last_err = None
+    for attempt in range(1, SW_MAX_RETRY + 1):
+        try:
+            r = _sw_session().get(
+                SW_API_URL,
+                params={
+                    'page': page,
+                    'page_size': SW_PAGE_SIZE,
+                    'index_type': '一级行业',
+                    'swindexcode': 'all',
+                    'type': 'DAY',
+                    'start_date': start_date,
+                    'end_date': end_date,
+                },
+                timeout=SW_FETCH_TIMEOUT,
+            )
+            r.raise_for_status()
+            return r.json()['data']
+        except Exception as e:
+            last_err = e
+            if attempt < SW_MAX_RETRY:
+                time.sleep(min(0.5 * attempt, 3))
+    raise RuntimeError(
+        f"申万 {start_date}~{end_date} 第 {page} 页连续 {SW_MAX_RETRY} 次失败: "
+        f"{type(last_err).__name__}: {last_err}")
+
+
 def _sw_fetch_raw(start_date, end_date):
-    """向申万发起一次区间请求, 带超时注入与重试。"""
-    with _request_timeout(SW_FETCH_TIMEOUT):
-        last_err = None
-        for attempt in range(1, SW_MAX_RETRY + 1):
-            try:
-                return ak.index_analysis_daily_sw(
-                    symbol="一级行业",
-                    start_date=start_date.replace('-', ''),
-                    end_date=end_date.replace('-', ''),
-                )
-            except Exception as e:
-                last_err = e
-                if attempt < SW_MAX_RETRY:
-                    wait = 2 ** attempt
-                    print(f"       [重试 {attempt}/{SW_MAX_RETRY}] {type(e).__name__}: {e} —— {wait}s 后重试")
-                    time.sleep(wait)
-        raise last_err
+    """
+    直连申万取回一个日期区间的全部行, 列名与 akshare 的中文列保持一致。
+
+    :return: DataFrame; 区间内无数据时返回空 DataFrame
+    """
+    rows, page = [], 1
+    data = _sw_get_page(start_date, end_date, page)
+    total = int(data.get('count') or 0)
+    rows.extend(data.get('results') or [])
+    while len(rows) < total:
+        page += 1
+        got = _sw_get_page(start_date, end_date, page).get('results') or []
+        if not got:      # 服务端提前没数据了, 别死循环
+            break
+        rows.extend(got)
+
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows).rename(columns=SW_FIELD_MAP)
+    df['发布日期'] = pd.to_datetime(df['发布日期'], errors='coerce').dt.date
+    for c in ('成交额占比', '换手率', '流通市值', '平均流通市值', '成交量'):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+    return df.sort_values('发布日期', ignore_index=True)
 
 
 def fetch_sw_daily_metrics(start_date, end_date):
@@ -248,7 +341,8 @@ def fetch_market_breadth():
     """
     print(">> 正在获取全市场涨跌家数快照...")
     try:
-        df = ak.stock_zh_a_spot_em()
+        with _request_timeout(AK_FETCH_TIMEOUT):
+            df = ak.stock_zh_a_spot_em()
         if df is None or len(df) < 3000:
             print(f"     [WARN] 快照仅 {0 if df is None else len(df)} 只个股 (预期约5000+), 放弃")
             return None
