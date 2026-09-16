@@ -11,6 +11,7 @@ A股情绪指标全自动数据抓取、合并与 Spot Check 校验模块 (v3.0)
 import os
 import sys
 import json
+import socket
 import time
 import requests
 import numpy as np
@@ -31,6 +32,13 @@ EXCEL_PATH = os.path.join(WORKSPACE_DIR, '副本万得全A.xlsx')
 
 # 申万一级共 31 个行业; 返回数少于此值视为接口异常, 拒绝使用
 SW_MIN_INDUSTRIES = 25
+# akshare 的 index_analysis_daily_sw 内部按每页 50 条串行翻页, 且每个 requests.get
+# 都不带 timeout —— 服务端一旦限流或挂起就会永久阻塞, 无法自行退出。
+# 对策: 把日期区间切成小块分次请求(每块页数少, 卡住只损失一块), 加重试,
+# 并用全局 socket 超时给那些没有 timeout 的请求兜底。
+SW_FETCH_TIMEOUT = 30    # 秒
+SW_CHUNK_DAYS = 45       # 每次请求覆盖的自然日数
+SW_MAX_RETRY = 3
 # 行业集中度自动回补的回看天数。申万当日数据可能盘后延迟发布, 由当天后续几次
 # CI 或次日补上。仅覆盖发布延迟, 批量历史回填请用 backfill_industry_sw.py
 SW_REPAIR_LOOKBACK_DAYS = 7
@@ -88,6 +96,35 @@ def fetch_market_turnover_and_breadth():
         print(f"     [WARN] 实时成交额拉取异常: {e}")
     return 18220.0
 
+def _sw_fetch_raw(start_date, end_date):
+    """
+    向申万发起一次区间请求, 带重试与全局 socket 超时兜底。
+
+    akshare 的 index_analysis_daily_sw 内部翻页时不设 timeout, 因此必须靠
+    socket.setdefaulttimeout 才能让阻塞的请求最终抛错而不是永久挂起。
+    """
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(SW_FETCH_TIMEOUT)
+    try:
+        last_err = None
+        for attempt in range(1, SW_MAX_RETRY + 1):
+            try:
+                return ak.index_analysis_daily_sw(
+                    symbol="一级行业",
+                    start_date=start_date.replace('-', ''),
+                    end_date=end_date.replace('-', ''),
+                )
+            except Exception as e:
+                last_err = e
+                if attempt < SW_MAX_RETRY:
+                    wait = 2 ** attempt
+                    print(f"       [重试 {attempt}/{SW_MAX_RETRY}] {type(e).__name__}: {e} —— {wait}s 后重试")
+                    time.sleep(wait)
+        raise last_err
+    finally:
+        socket.setdefaulttimeout(old_timeout)
+
+
 def fetch_sw_daily_metrics(start_date, end_date):
     """
     从申万宏源一次取回日期区间内每个交易日的两项指标
@@ -103,16 +140,24 @@ def fetch_sw_daily_metrics(start_date, end_date):
     """
     print(f">> [4/5] 正在获取申万一级行业数据 ({start_date} ~ {end_date})...")
     try:
-        raw = ak.index_analysis_daily_sw(
-            symbol="一级行业",
-            start_date=start_date.replace('-', ''),
-            end_date=end_date.replace('-', ''),
-        )
-        if raw is None or len(raw) == 0:
+        # 分块请求: 每块页数少, 单块卡住只损失该块, 且能看到进度停在哪一段
+        parts, cur, end_ts = [], pd.Timestamp(start_date), pd.Timestamp(end_date)
+        while cur <= end_ts:
+            chunk_end = min(cur + pd.Timedelta(days=SW_CHUNK_DAYS - 1), end_ts)
+            print(f"     · 区间 {cur.date()} ~ {chunk_end.date()}")
+            part = _sw_fetch_raw(cur.strftime('%Y-%m-%d'), chunk_end.strftime('%Y-%m-%d'))
+            if part is not None and len(part) > 0:
+                parts.append(part)
+            cur = chunk_end + pd.Timedelta(days=1)
+
+        if not parts:
             print("     [WARN] 申万接口返回空数据")
             return {}
 
+        raw = pd.concat(parts, ignore_index=True)
         raw = raw[['发布日期', '指数名称', '成交额占比', '换手率', '流通市值']].copy()
+        # 分块边界若有重叠会让同一交易日的占比合计翻倍, 进而破坏下面的单位判定
+        raw = raw.drop_duplicates(subset=['发布日期', '指数名称'])
         raw['发布日期'] = pd.to_datetime(raw['发布日期'])
         for c in ('成交额占比', '换手率', '流通市值'):
             raw[c] = pd.to_numeric(raw[c], errors='coerce')
