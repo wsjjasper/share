@@ -29,10 +29,11 @@ if sys.platform.startswith('win'):
 WORKSPACE_DIR = os.path.dirname(os.path.abspath(__file__))
 EXCEL_PATH = os.path.join(WORKSPACE_DIR, '副本万得全A.xlsx')
 
-headers_em = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Referer': 'https://quote.eastmoney.com/center/gridlist.html'
-}
+# 申万一级共 31 个行业; 返回数少于此值视为接口异常, 拒绝使用
+SW_MIN_INDUSTRIES = 25
+# 行业集中度自动回补的回看天数。申万当日数据可能盘后延迟发布, 由当天后续几次
+# CI 或次日补上。仅覆盖发布延迟, 批量历史回填请用 backfill_industry_sw.py
+SW_REPAIR_LOOKBACK_DAYS = 7
 
 def get_all_market_trade_dates():
     """
@@ -87,55 +88,63 @@ def fetch_market_turnover_and_breadth():
         print(f"     [WARN] 实时成交额拉取异常: {e}")
     return 18220.0
 
-def fetch_industry_concentration(fallback_ratio=None, fallback_amt=None):
+def fetch_sw_industry_top3(start_date, end_date):
     """
-    抓取东财【行业板块】成交额集中度
-    口径: 按成交额降序取前 3 个行业板块, 前3成交额合计 / 全部行业板块成交额合计
-          (既不是涨幅前3, 也不是地域板块)
+    从申万宏源取日期区间内每个交易日的「成交额前三行业占比」
 
-    注意: 东财行业板块约 86 个, 比 Wind 申万一级 (31个) 细得多,
-          因此前3占比 (约20%) 显著低于 2026-08-25 之前的 Wind 历史数据 (均值 36.76%)。
-          这是已知的量纲断层, 会压低该维度的滚动分位数。
+    口径: 申万一级 31 个行业 —— 与 Excel 中 2026-08-25 之前的 Wind 历史数据同口径,
+          因此新旧数据属于同一序列, 不存在量纲断层。
+    数据源: akshare.index_analysis_daily_sw(symbol="一级行业"), 每行带 成交额占比 字段,
+            前 3 名相加即为目标值, 无需自行拼分母。
+
+    与此前东财 clist 的关键差别: 申万按日期区间返回, 因此每个交易日拿到的是
+    该日自己的数值; 东财只有当前快照, 只能把同一个值写给所有新日期。
+
+    :return: {'YYYY-MM-DD': (占比小数, 前三行业明细字符串)}; 失败时返回 {}
     """
-    print(">> [4/5] 正在获取东财行业板块成交额集中度...")
+    print(f">> [4/5] 正在获取申万一级行业成交额集中度 ({start_date} ~ {end_date})...")
     try:
-        # 东财字段: f6=成交额, f3=涨跌幅, f14=名称。fid=f6&po=1 即请求服务端按成交额降序
-        # 板块池 fs: t:1=地域板块(省份), t:2=行业板块, t:3=概念板块 —— 必须用 t:2
-        # pz 必须大于板块总数: 行业板块约 86 个, pz=50 会截断导致分母偏小、占比被高估
-        url_ind = 'http://push2delay.eastmoney.com/api/qt/clist/get?pn=1&pz=200&po=1&np=1&fltt=2&invt=2&fid=f6&fs=m:90+t:2+f:!50&fields=f12,f14,f2,f3,f6'
-        r_ind = requests.get(url_ind, headers=headers_em, timeout=8)
-        diff = r_ind.json().get('data', {}).get('diff', [])
+        raw = ak.index_analysis_daily_sw(
+            symbol="一级行业",
+            start_date=start_date.replace('-', ''),
+            end_date=end_date.replace('-', ''),
+        )
+        if raw is None or len(raw) == 0:
+            print("     [WARN] 申万接口返回空数据")
+            return {}
 
-        # 不依赖服务端返回顺序: 本地按成交额显式降序, 保证取到的是"成交额前3"而非"涨幅前3"
-        # (行业名与成交额成对保存, 避免过滤非数值 f6 后名称与求和错位)
-        boards = [(item.get('f14'), float(item['f6']))
-                  for item in diff if isinstance(item.get('f6'), (int, float))]
-        boards.sort(key=lambda x: x[1], reverse=True)
+        raw = raw[['发布日期', '指数名称', '成交额占比']].copy()
+        raw['发布日期'] = pd.to_datetime(raw['发布日期'])
+        raw['成交额占比'] = pd.to_numeric(raw['成交额占比'], errors='coerce')
+        raw = raw.dropna(subset=['成交额占比'])
 
-        if len(boards) >= 50:
-            total_sum = sum(amt for _, amt in boards)
-            top3 = boards[:3]
-            top3_sum = sum(amt for _, amt in top3)
-            top3_ratio = (top3_sum / total_sum) if total_sum > 0 else 0.0
-            if top3_ratio > 0:
-                top3_desc = ', '.join(f"{name}({amt/1e8:.0f}亿)" for name, amt in top3)
-                print(f"     [OK] 成交额前3行业: {top3_desc} | 前3合计: {top3_sum/1e8:.2f}亿, "
-                      f"全部{len(boards)}个行业板块合计: {total_sum/1e8:.2f}亿, 占比: {top3_ratio * 100:.2f}%")
-                return top3_ratio, top3_sum / 1e8
+        # 单位自适应: 同一交易日全部行业占比之和应接近 1(小数) 或 100(百分数)
+        daily_sum = raw.groupby('发布日期')['成交额占比'].sum().median()
+        if 50 <= daily_sum <= 150:
+            scale = 100.0
+        elif 0.5 <= daily_sum <= 1.5:
+            scale = 1.0
+        else:
+            print(f"     [WARN] 无法判定 成交额占比 单位 (每日合计中位数 {daily_sum:.4f}), 放弃本次抓取")
+            return {}
 
-        print(f"     [WARN] 有效行业板块仅 {len(boards)} 个 (预期约86个), 疑似接口截断或异常")
+        result = {}
+        for d, g in raw.groupby('发布日期'):
+            if len(g) < SW_MIN_INDUSTRIES:
+                print(f"     [WARN] {d.date()} 仅 {len(g)} 个行业 (预期31个), 跳过该日")
+                continue
+            top3 = g.sort_values('成交额占比', ascending=False).head(3)
+            ratio = float(top3['成交额占比'].sum()) / scale
+            detail = ', '.join(f"{r['指数名称']}({r['成交额占比'] / scale * 100:.2f}%)"
+                               for _, r in top3.iterrows())
+            result[d.strftime('%Y-%m-%d')] = (ratio, detail)
+
+        print(f"     [OK] 取到 {len(result)} 个交易日的申万一级行业集中度")
+        return result
     except Exception as e:
-        print(f"     [WARN] 行业集中度拉取异常: {e}")
+        print(f"     [WARN] 申万行业数据拉取异常: {e}")
+        return {}
 
-    # 抓取失败时沿用上一交易日数值。切勿写死魔数: 口径一旦变更,
-    # 固定常量会变成极端离群值, 把该维度的分位数推到 0 或 100。
-    if fallback_ratio is not None and not pd.isna(fallback_ratio):
-        amt = float(fallback_amt) if fallback_amt is not None and not pd.isna(fallback_amt) else 0.0
-        print(f"     [WARN] 沿用上一交易日行业集中度: {float(fallback_ratio) * 100:.2f}%")
-        return float(fallback_ratio), amt
-
-    print("     [WARN] 无可用回退值, 返回 0 占位 (该行数据不可信)")
-    return 0.0, 0.0
 
 def auto_sync_and_append():
     """
@@ -178,16 +187,35 @@ def auto_sync_and_append():
                 updated_count += 1
                 print(f"     [官方修正/补全] {d}: 融资买入额更新为 {exact_val:.2f} 亿, 占比 {ratio_decimal*100:.2f}%")
 
+    # 2. 回补近期因申万发布延迟而为空的行业集中度
+    #    只看最近 SW_REPAIR_LOOKBACK_DAYS 天; 批量历史回填请用 backfill_industry_sw.py
+    d_norm = pd.to_datetime(df_excel.iloc[:, 1]).dt.normalize()
+    cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=SW_REPAIR_LOOKBACK_DAYS)
+    gaps = df_excel.index[(d_norm >= cutoff) & df_excel.iloc[:, 3].isna()]
+    if len(gaps) > 0:
+        gd = d_norm[gaps]
+        print(f"\n>> 发现 {len(gaps)} 个近期交易日缺行业集中度, 尝试回补")
+        sw_fix = fetch_sw_industry_top3(gd.min().strftime('%Y-%m-%d'), gd.max().strftime('%Y-%m-%d'))
+        for idx in gaps:
+            key = d_norm[idx].strftime('%Y-%m-%d')
+            if key not in sw_fix:
+                continue
+            ratio, detail = sw_fix[key]
+            total_amt = df_excel.iloc[idx, 6]
+            df_excel.iloc[idx, 3] = ratio
+            df_excel.iloc[idx, 7] = ratio * total_amt if pd.notna(total_amt) else np.nan
+            updated_count += 1
+            print(f"     [行业集中度回补] {key}: {ratio * 100:.2f}%  ({detail})")
+
     # 2. 识别收盘但尚未录入 Excel 的新交易日 (如 2026-08-26)
     new_dates = [d for d in all_trade_dates if d not in excel_dates and d >= '2024-09-24']
     
     if new_dates:
         print(f"\n>> [5/5] 识别到 {len(new_dates)} 个已收盘新交易日需自动追加: {new_dates}")
         total_market_amt = fetch_market_turnover_and_breadth()
-        # 抓取失败时以上一交易日的行业集中度回退, 保证量纲与当前口径一致
-        last_ratio = df_excel.iloc[-1, 3] if len(df_excel) > 0 else None
-        last_amt = df_excel.iloc[-1, 7] if len(df_excel) > 0 else None
-        top3_ratio, top3_amt = fetch_industry_concentration(last_ratio, last_amt)
+        # 按日期区间取值: 每个交易日用它自己的行业集中度, 不再把一次抓取的
+        # 同一个数值写给所有新日期
+        sw_map = fetch_sw_industry_top3(min(new_dates), max(new_dates))
 
         for new_d in new_dates:
             # 若两融已披露则用官方值，未披露则取最近已知值估算
@@ -200,6 +228,13 @@ def auto_sync_and_append():
                 is_exact = False
 
             margin_ratio_dec = (mb_val / total_market_amt) if total_market_amt > 0 else 0.085
+
+            # 申万当日若尚未发布, 留空由后续 CI 的回补流程补上, 不写入占位数值
+            if new_d in sw_map:
+                top3_ratio, top3_detail = sw_map[new_d]
+                top3_amt = top3_ratio * total_market_amt if total_market_amt > 0 else np.nan
+            else:
+                top3_ratio, top3_amt, top3_detail = np.nan, np.nan, '申万当日数据未发布, 留空待回补'
 
             new_row = {
                 df_excel.columns[0]: '万得全A\n881001.WI',
@@ -220,7 +255,10 @@ def auto_sync_and_append():
             }
             df_excel = pd.concat([df_excel, pd.DataFrame([new_row])], ignore_index=True)
             status_tag = "官方数据" if is_exact else "盘后即时估算(夜间自动更新)"
-            print(f"     [追加新交易日成功] {new_d}: 换手=1.48%, 行业前3={top3_ratio*100:.2f}%, 上涨=58.50%, 融资买入={mb_val:.2f}亿({status_tag})")
+            ratio_txt = '—' if pd.isna(top3_ratio) else f"{top3_ratio * 100:.2f}%"
+            print(f"     [追加新交易日成功] {new_d}: 换手=1.48%, 行业前3={ratio_txt}, "
+                  f"上涨=58.50%, 融资买入={mb_val:.2f}亿({status_tag})")
+            print(f"                        行业明细: {top3_detail}")
             updated_count += 1
 
     # 3. 写入 Excel 并同步

@@ -34,66 +34,22 @@ MIN_CORRELATION = 0.80    # 相关系数下限
 
 def fetch_sw_top3(start_date, end_date):
     """
-    返回 DataFrame[日期, top3_占比(0~1), 行业明细]
-    申万一级共 31 个行业, 对每个交易日取成交额占比最高的 3 个相加。
+    返回 DataFrame[日期, top3_ratio, 明细]
+
+    抓取与单位判定复用 auto_fetch_daily.fetch_sw_industry_top3 —— 两处共用一份实现,
+    避免日常管线与回填脚本的口径各自漂移。
     """
-    import akshare as ak
+    from auto_fetch_daily import fetch_sw_industry_top3
 
-    print(f">> 拉取申万一级行业数据 {start_date} ~ {end_date} ...")
-    raw = ak.index_analysis_daily_sw(
-        symbol="一级行业",
-        start_date=start_date.replace('-', ''),
-        end_date=end_date.replace('-', ''),
-    )
-    if raw is None or raw.empty:
-        raise RuntimeError("申万接口返回空数据")
+    sw = fetch_sw_industry_top3(start_date, end_date)
+    if not sw:
+        raise RuntimeError("申万接口未返回可用数据")
 
-    raw = raw[['发布日期', '指数名称', '成交额占比']].copy()
-    raw['发布日期'] = pd.to_datetime(raw['发布日期'])
-    raw['成交额占比'] = pd.to_numeric(raw['成交额占比'], errors='coerce')
-    raw = raw.dropna(subset=['成交额占比'])
-
-    # 单位自适应: 同一交易日全部行业占比之和应接近 1 (小数) 或 100 (百分数)
-    daily_sum = raw.groupby('发布日期')['成交额占比'].sum().median()
-    if 50 <= daily_sum <= 150:
-        scale, unit = 100.0, '百分数'
-    elif 0.5 <= daily_sum <= 1.5:
-        scale, unit = 1.0, '小数'
-    else:
-        raise RuntimeError(
-            f"无法判定 成交额占比 的单位: 每日合计中位数为 {daily_sum:.4f}, "
-            f"既不接近 1 也不接近 100 —— 接口口径可能已变更, 请人工核对"
-        )
-    print(f"     [OK] 单位判定为{unit} (每日合计中位数 {daily_sum:.4f}), 已归一化为小数")
-
-    rows = []
-    for d, g in raw.groupby('发布日期'):
-        n = len(g)
-        if n < 25:   # 申万一级应有 31 个行业
-            print(f"     [WARN] {d.date()} 仅 {n} 个行业, 跳过")
-            continue
-        g = g.sort_values('成交额占比', ascending=False)
-        top3 = g.head(3)
-        rows.append({
-            '日期': d.normalize(),
-            'top3_ratio': top3['成交额占比'].sum() / scale,
-            '行业数': n,
-            '明细': ', '.join(f"{r['指数名称']}({r['成交额占比'] / scale * 100:.2f}%)"
-                              for _, r in top3.iterrows()),
-        })
-
-    out = pd.DataFrame(rows).sort_values('日期').reset_index(drop=True)
-    print(f"     [OK] 得到 {len(out)} 个交易日的前三行业占比")
+    out = pd.DataFrame(
+        [{'日期': pd.Timestamp(k), 'top3_ratio': v[0], '明细': v[1]} for k, v in sw.items()]
+    ).sort_values('日期').reset_index(drop=True)
+    print(f"     [OK] 共 {len(out)} 个交易日可用于校验与回填")
     return out
-
-
-def compute_top3(raw, scale):
-    """从长表计算每日前三占比 —— 与 fetch_sw_top3 共用逻辑, 便于离线测试。"""
-    rows = []
-    for d, g in raw.groupby('发布日期'):
-        g = g.sort_values('成交额占比', ascending=False)
-        rows.append({'日期': d, 'top3_ratio': g.head(3)['成交额占比'].sum() / scale})
-    return pd.DataFrame(rows).sort_values('日期').reset_index(drop=True)
 
 
 def validate(sw, df_excel, n_days):

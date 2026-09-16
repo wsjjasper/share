@@ -88,69 +88,68 @@ computed.
 
 ## Data fetching and its estimates
 
-`auto_fetch_daily.py` has no Wind license. It reconstructs rows from free sources:
-akshare (`stock_zh_index_daily` for the trading calendar, `stock_margin_account_info` for official
-margin data), Tencent `qt.gtimg.cn` for aggregate turnover, and Eastmoney `push2delay` for
-industry concentration. Two things follow:
+`auto_fetch_daily.py` has no Wind license. It reconstructs rows from free sources, all via
+akshare except one: `stock_zh_index_daily` for the trading calendar, `stock_margin_account_info`
+for official margin data, `index_analysis_daily_sw` for industry concentration, and Tencent
+`qt.gtimg.cn` for aggregate turnover. Two things follow:
 
 - **New rows are partly hardcoded placeholders.** When appending a fresh trading day it writes
   literal constants for turnover rate (1.48), advancing-stock share (0.585 / 58.50) and advancing
   count (3240) because no free source is wired up for them. Only turnover, industry concentration
-  and margin figures are actually fetched. Each fetcher also has a hardcoded fallback return
-  (18220.0 亿 turnover; 0.435 / 7950.0 industry) used when the HTTP call fails, so a network
-  failure produces plausible-looking wrong data rather than an error.
+  and margin figures are actually fetched. `fetch_market_turnover_and_breadth` still returns a
+  hardcoded 18220.0 亿 when its HTTP call fails, so a network failure there produces
+  plausible-looking wrong data rather than an error; the industry fetch no longer does this.
 - **Self-repair pass.** Before appending, it walks every existing row and overwrites columns
   5/12/13 from the official akshare margin table whenever the stored value is NaN, 0, or differs
   by more than 1.0 亿. This is what makes the same-day estimate converge to the official number
   across the three daily CI runs.
 
-The Eastmoney `fs` board pool is load-bearing and easy to get wrong: `t:1` is **geographic**
-boards (31 provinces), `t:2` is industry boards (~86), `t:3` is concept boards. The code used
-`t:1` until 2026-09-16 on the belief that it meant "31 primary industries" — the province count
-coincides exactly with 申万一级's 31 sectors, and the resulting ratio (40–43%) sat inside the Wind
-history's range (25–52%), so the series looked continuous while measuring geography. It now uses
-`t:2`. Two constraints follow:
+Industry concentration comes from 申万宏源 via `fetch_sw_industry_top3(start, end)`, which wraps
+akshare's `index_analysis_daily_sw(symbol="一级行业", start_date, end_date)`. That endpoint returns
+one row per industry per day over a date range and carries a `成交额占比` column, so the top-3
+share is a sum of three numbers — no denominator to assemble and no per-board request fan-out.
 
-- **`pz` must exceed the board count.** With ~86 industry boards, the old `pz=50` would truncate
-  the response, shrinking the denominator and inflating the ratio. It is now `pz=200`, and the
-  function refuses a response with fewer than 50 boards rather than computing from a partial set.
-- **A caliber break exists at 2026-08-26.** Rows before it are Wind's real industry figures
-  (mean 36.76%); 2026-08-26 to 2026-09-16 are geographic (mean 41.91%); `t:2` values run ~20%,
-  below the trailing window's minimum, so `成交额前三行业占比_分位` pins to 0 until the 252-day
-  window flushes the older caliber out — roughly a year.
+Three properties matter:
 
-The "top 3" is by **traded value**, not by price gain: `fid=f6&po=1` asks the server for turnover-
-descending order (f6 = 成交额, f3 = 涨跌幅), but `fetch_industry_concentration` re-sorts by amount
-locally rather than trusting the response order, because Eastmoney's board lists default to
-change-percent order and a silently ignored `fid` would otherwise yield a "top-3 by gainers" ratio
-that still looks plausible. On any fetch failure the function carries forward the previous trading
-day's ratio (passed in by the caller) instead of returning a hardcoded constant — a fixed magic
-number becomes an extreme outlier the moment the caliber changes, pinning the percentile to 0 or 100.
+- **It is the same caliber as the Wind history** — 申万一级, 31 industries — so fetched values
+  belong in the same series as the pre-2026-08-26 rows.
+- **It is queried by date range**, so each trading day gets its own figure. The previous Eastmoney
+  `clist` endpoint returned only a current snapshot, and the fetch sat outside the date loop, so
+  one value was written to every date appended in that run (2026-08-27 and 08-28 in the committed
+  history are identical for exactly this reason).
+- **It never substitutes a constant.** If 申万 has not published yet, or returns fewer than
+  `SW_MIN_INDUSTRIES` (25) rows for a day, or its `成交额占比` sums to neither ~1 nor ~100 per day
+  (the unit auto-detection), the fetch returns nothing and the row is left `NaN`. A repair pass in
+  `auto_sync_and_append` then refills any `NaN` industry cell dated within
+  `SW_REPAIR_LOOKBACK_DAYS` (7) on a later run — the same shape as the margin self-repair, and the
+  reason the three daily CI runs matter for this column too.
 
-## Historical industry concentration: the 申万 source
+**Caliber history of this column.** Rows through 2026-08-25 are Wind's own industry figures
+(mean 36.76%). 2026-08-26 to 2026-09-16 were fetched from Eastmoney `fs=m:90+t:1`, the
+**geographic** board pool (31 provinces) rather than industries — the province count coincides
+exactly with 申万一级's 31 sectors and the ratio (40–43%) sat inside the Wind range (25–52%), so
+the series looked continuous while measuring geography. Those 16 rows have been voided to `NaN`.
+Eastmoney's pools, for reference if anyone reaches for them again: `t:1` geographic, `t:2`
+industry (~86 boards, top-3 ≈ 20%, far finer than 申万一级), `t:3` concept.
 
-`backfill_industry_sw.py` (one-off script, not part of the pipeline) fills the industry column
-from 申万宏源 rather than Eastmoney, via akshare's `index_analysis_daily_sw(symbol="一级行业",
-start_date, end_date)`. That endpoint returns one row per industry per day over a date range and
-carries a `成交额占比` column, so the top-3 share is a sum of three numbers — no denominator to
-assemble, and no per-board request fan-out. It matters for two reasons Eastmoney cannot cover:
+## Backfilling history: `backfill_industry_sw.py`
 
-- **It has history.** Eastmoney's `clist` endpoint used by `auto_fetch_daily.py` returns only a
-  current snapshot, so past days can never be reconstructed from it.
-- **It is the same caliber as the Wind column** — 申万一级, 31 industries — so backfilled values
-  belong in the same series as the pre-2026-08-26 history instead of opening a third caliber.
+A one-off script for filling stretches of the industry column older than the
+`SW_REPAIR_LOOKBACK_DAYS` window the daily pipeline covers. It imports `fetch_sw_industry_top3`
+from `auto_fetch_daily.py` rather than keeping its own copy, so both read the same source through
+the same code.
 
 The script refuses to write unless the values it computes agree with the Wind column over an
 overlap window (mean absolute deviation ≤ 3 percentage points and correlation ≥ 0.80, both
-configurable at the top of the file). It also auto-detects whether `成交额占比` arrives as a
-percentage or a decimal by checking whether each day's 31 values sum to ~100 or ~1, and aborts if
-neither. Run it with no flags to validate and preview; `--apply` writes. Column 7 (前三行业合计)
-is derived as ratio × column 6, since the source gives only the share.
+configurable at the top of the file). Run it with no flags to validate and preview; `--apply`
+writes. Column 7 (前三行业合计) is derived as ratio × column 6, since the source gives only the
+share.
 
-If its validation passes, the daily fetch in `auto_fetch_daily.py` should move from Eastmoney
-`t:2` to this same 申万 source — that removes the caliber break described above rather than
-managing it. `index_analysis_daily_sw(symbol="市场表征")` also carries a `换手率` column, which is
-a candidate for replacing the hardcoded 1.48 turnover-rate placeholder.
+Run its validation before trusting the daily path: the pipeline's repair pass fills recent `NaN`
+industry cells automatically and has no validation gate of its own.
+
+`index_analysis_daily_sw(symbol="市场表征")` also carries a `换手率` column, which is a candidate
+for replacing the hardcoded 1.48 turnover-rate placeholder.
 
 ## `_latest.xlsx` fallback trap
 
