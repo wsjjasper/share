@@ -19,38 +19,38 @@
 连续请求，而 `akshare/index/index_research_sw.py` 全文 `timeout=` 出现 **0 次** —— 每个
 `requests.get` 都不带超时。服务端一限流或挂起就永久阻塞。
 
-### 我的修复失败了，原因也已确认
+### 已修：超时现在真的生效了
 
-`46ffd67` 里加的 `socket.setdefaulttimeout(30)` **对 requests 无效**：
+最初 (`46ffd67`) 我用 `socket.setdefaulttimeout(30)` 兜底，**那是无效的**，已删除。
+原因：urllib3 在连接建立后无条件执行
 
 ```
 urllib3/connection.py:439  self.sock.settimeout(self.timeout)
 urllib3/connection.py:560  self.sock.settimeout(self.timeout)
 ```
 
-这两处无条件执行。`requests.get()` 不传 timeout 时 `self.timeout` 就是 `None`，于是
-`sock.settimeout(None)` **显式把 socket 设回永久阻塞，覆盖掉全局默认值**。
-（环境：urllib3 2.6.3 / requests 2.33.1）
+`requests.get()` 不传 timeout 时 `self.timeout` 就是 `None`，于是 `sock.settimeout(None)`
+**显式把 socket 设回永久阻塞，覆盖掉全局默认值**。（环境：urllib3 2.6.3 / requests 2.33.1）
 
-同一提交里的**分块 (45天/块) 和重试仍然有效**，保留；只有 socket 兜底那层是死的。
+现在改成 `_request_timeout` 上下文管理器，拦在 `requests.Session.request` 这一层注入
+`SW_FETCH_TIMEOUT = (10, 30)`，退出时还原，作用域不外溢到管线里其它 akshare 调用。
 
-### 三条出路，按推荐排序
+**这是本次唯一走真实 requests 栈验证过的代码**（在 `Session.send` 记录实际收到的 timeout）：
+无 timeout 的调用被注入 `(10,30)`、显式传 `timeout=5` 的不被覆盖、正常与异常路径都正确还原。
+分块 (45天/块) 与重试 (3次, 2s/4s 退避) 保留不变。
 
-**A. Monkey-patch `requests.Session.request` 注入默认 timeout**（最小改动）
+### 重跑后会看到什么
 
-```python
-import requests
-_orig = requests.Session.request
-def _patched(self, method, url, **kw):
-    if kw.get('timeout') is None:
-        kw['timeout'] = (10, 30)      # (连接, 读取)
-    return _orig(self, method, url, **kw)
-requests.Session.request = _patched
-```
-放在 `import akshare` **之后**、任何抓取之前。akshare 用模块级 `requests.get`，
-最终都走 `Session.request`，所以这一处能覆盖全部调用。
+超时只是把"永久挂起"变成"**报错退出**"，不等于抓取就能成功。两种可能：
 
-**B. 绕开 akshare，直连申万**（最稳，推荐）
+- **跑通** → 之前只是偶发卡在某一页，问题解决
+- **每块重试 3 次后全部超时** → 申万在限流或拒绝连接，走下面的出路
+
+后者才是真没解决。**别把"现在会报错了"当成修好了。**
+
+### 若仍失败，两条出路
+
+**A. 绕开 akshare，直连申万**（推荐）
 
 端点和字段我已从 akshare 源码读出，不用猜：
 
@@ -61,6 +61,7 @@ params: page=1, page_size=50, index_type=一级行业, swindexcode=all, type=DAY
 headers: User-Agent: Mozilla/5.0 ...
 verify=False          # akshare 原样如此
 ```
+
 响应 `data.count` 是总条数，`data.results` 是当页数组。字段改名映射：
 
 | 原始字段 | 含义 |
@@ -71,9 +72,11 @@ verify=False          # akshare 原样如此
 | `turnoverrate` | 换手率 |
 | `negotiablessharesum1` | 流通市值 |
 
-自己控制 timeout、并发、重试、`page_size`（试试调大到 200，页数能降一个量级）。
+自己控制 timeout、重试、间隔。**重点：把 `page_size` 从 50 调到 200**，页数直接降一个量级
+——如果瓶颈是请求次数触发限流，这是最直接的解法。写好后替换
+`auto_fetch_daily._sw_fetch_raw` 即可，上层的分块、去重、单位判定、校验全都不用动。
 
-**C. 缩小区间硬扛**：`--validate-days 20` + `SW_CHUNK_DAYS=15`。只是降低概率，不解决问题。
+**B. 缩小区间硬扛**：`--validate-days 20` + `SW_CHUNK_DAYS=15`。只降低概率，不解决问题。
 
 ### 先做的诊断（30 秒）
 
@@ -190,7 +193,8 @@ akshare 里**没有任何带日期参数的市场宽度接口**。我查过：
 | `a54c05d` | 新增 `backfill_industry_sw.py` |
 | `2b06f83` | 日常抓取改用申万；修"一次抓取写给多个日期"的老 bug |
 | `642d1f3` | 换手率改为申万推导；上涨占比改用快照；清除全部硬编码占位常量 |
-| `46ffd67` | 申万抓取分块+重试（socket 超时那层无效，见 §1） |
+| `46ffd67` | 申万抓取分块+重试（其中 socket 超时那层无效） |
+| `(最新)` | 删除无效的 socket 兜底，改为 requests 层注入超时 |
 
 **最重要的历史教训**：原代码用东财 `fs=m:90+t:1`，注释写"一级行业31个板块"，实际是
 **地域板块（31个省份）**。省份数恰好也是 31，且地域前3占比 40~43% 正好落在 Wind 行业

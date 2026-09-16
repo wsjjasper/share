@@ -11,7 +11,7 @@ A股情绪指标全自动数据抓取、合并与 Spot Check 校验模块 (v3.0)
 import os
 import sys
 import json
-import socket
+import contextlib
 import time
 import requests
 import numpy as np
@@ -35,8 +35,8 @@ SW_MIN_INDUSTRIES = 25
 # akshare 的 index_analysis_daily_sw 内部按每页 50 条串行翻页, 且每个 requests.get
 # 都不带 timeout —— 服务端一旦限流或挂起就会永久阻塞, 无法自行退出。
 # 对策: 把日期区间切成小块分次请求(每块页数少, 卡住只损失一块), 加重试,
-# 并用全局 socket 超时给那些没有 timeout 的请求兜底。
-SW_FETCH_TIMEOUT = 30    # 秒
+# 并在 requests 层注入默认超时(见 _request_timeout)。
+SW_FETCH_TIMEOUT = (10, 30)    # (连接, 读取) 秒
 SW_CHUNK_DAYS = 45       # 每次请求覆盖的自然日数
 SW_MAX_RETRY = 3
 # 行业集中度自动回补的回看天数。申万当日数据可能盘后延迟发布, 由当天后续几次
@@ -96,16 +96,35 @@ def fetch_market_turnover_and_breadth():
         print(f"     [WARN] 实时成交额拉取异常: {e}")
     return 18220.0
 
-def _sw_fetch_raw(start_date, end_date):
+@contextlib.contextmanager
+def _request_timeout(timeout):
     """
-    向申万发起一次区间请求, 带重试与全局 socket 超时兜底。
+    给 akshare 内部那些不带 timeout 的 requests 调用注入默认超时。
 
-    akshare 的 index_analysis_daily_sw 内部翻页时不设 timeout, 因此必须靠
-    socket.setdefaulttimeout 才能让阻塞的请求最终抛错而不是永久挂起。
+    不能用 socket.setdefaulttimeout: urllib3 在连接建立后会无条件执行
+    sock.settimeout(self.timeout) (connection.py:439/560), 而 requests 未传
+    timeout 时该值为 None, 等于显式把 socket 设回永久阻塞 —— 全局默认值被覆盖,
+    那层兜底完全无效。只有拦在 requests.Session.request 这一层才拦得住。
+
+    作用域限制在 with 块内并在退出时还原, 避免影响管线里其它 akshare 调用。
     """
-    old_timeout = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(SW_FETCH_TIMEOUT)
+    orig = requests.Session.request
+
+    def patched(self, *args, **kwargs):
+        if kwargs.get('timeout') is None:
+            kwargs['timeout'] = timeout
+        return orig(self, *args, **kwargs)
+
+    requests.Session.request = patched
     try:
+        yield
+    finally:
+        requests.Session.request = orig
+
+
+def _sw_fetch_raw(start_date, end_date):
+    """向申万发起一次区间请求, 带超时注入与重试。"""
+    with _request_timeout(SW_FETCH_TIMEOUT):
         last_err = None
         for attempt in range(1, SW_MAX_RETRY + 1):
             try:
@@ -121,8 +140,6 @@ def _sw_fetch_raw(start_date, end_date):
                     print(f"       [重试 {attempt}/{SW_MAX_RETRY}] {type(e).__name__}: {e} —— {wait}s 后重试")
                     time.sleep(wait)
         raise last_err
-    finally:
-        socket.setdefaulttimeout(old_timeout)
 
 
 def fetch_sw_daily_metrics(start_date, end_date):

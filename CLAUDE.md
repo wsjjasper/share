@@ -123,9 +123,13 @@ internally and passes no `timeout` to any of them, so a rate-limited or stalled 
 the whole script forever — a 9-month range is ~109 sequential requests, and one hang ends the run
 with no error. `fetch_sw_daily_metrics` therefore splits the range into `SW_CHUNK_DAYS` (45) day
 chunks and calls `_sw_fetch_raw` per chunk, which retries `SW_MAX_RETRY` (3) times with 2s/4s
-backoff under a `socket.setdefaulttimeout(SW_FETCH_TIMEOUT)` (30s) backstop — the only way to put
-a deadline on a request akshare makes without one. The default is saved and restored so it does
-not leak into other akshare calls. Chunk results are concatenated and de-duplicated on
+backoff inside `_request_timeout`, a context manager that patches `requests.Session.request` to
+fill in `SW_FETCH_TIMEOUT` ((10, 30)) whenever a caller passes none, and restores the original on
+exit so the patch cannot leak into the pipeline's other akshare calls. **`socket.setdefaulttimeout`
+does not work here** and was removed: urllib3 runs `sock.settimeout(self.timeout)` unconditionally
+after connecting (`connection.py:439/560`), and with requests passing `timeout=None` that call
+explicitly returns the socket to blocking mode, overriding the global default. Only a patch at the
+requests layer holds. Chunk results are concatenated and de-duplicated on
 `(发布日期, 指数名称)`: an overlap would double a day's `成交额占比` sum and break the unit
 auto-detection below.
 
