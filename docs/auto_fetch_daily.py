@@ -89,23 +89,35 @@ def fetch_market_turnover_and_breadth():
 
 def fetch_industry_concentration():
     """
-    抓取一级大类行业 (31个行业) 成交额前3占比
-    确保口径与 Wind 申万一级行业 100% 一致 (前3占比常态为 40%~48%，切勿使用 t:2 二级细分 100 板块)
+    抓取一级大类行业 (31个行业) 成交额集中度
+    口径: 按【成交额】降序取前 3 个一级行业, 前3成交额合计 / 全部一级行业成交额合计
+          (不是涨幅前3的行业占比; 与 Wind 申万一级行业口径对齐, 前3占比常态为 40%~48%)
     """
     print(">> [4/5] 正在获取一级行业 (31个行业) 成交额集中度...")
     try:
+        # 东财字段: f6=成交额, f3=涨跌幅, f14=名称。fid=f6&po=1 即请求服务端按成交额降序
         # 使用 t:1 (一级行业 31 个板块) 避免 t:2 (细分100板块导致占比被低估为20%)
         url_ind = 'http://push2delay.eastmoney.com/api/qt/clist/get?pn=1&pz=50&po=1&np=1&fltt=2&invt=2&fid=f6&fs=m:90+t:1+f:!50&fields=f12,f14,f2,f3,f6'
         r_ind = requests.get(url_ind, headers=headers_em, timeout=8)
         diff = r_ind.json().get('data', {}).get('diff', [])
-        if diff and len(diff) >= 20:
-            vols = [item['f6'] for item in diff if isinstance(item.get('f6'), (int, float))]
-            top3_sum = sum(vols[:3])
-            total_sum = sum(vols)
+
+        # 不依赖服务端返回顺序: 本地按成交额显式降序, 保证取到的是"成交额前3"而非"涨幅前3"
+        # (行业名与成交额成对保存, 避免过滤非数值 f6 后名称与求和错位)
+        boards = [(item.get('f14'), float(item['f6']))
+                  for item in diff if isinstance(item.get('f6'), (int, float))]
+        boards.sort(key=lambda x: x[1], reverse=True)
+
+        if len(boards) >= 20:
+            total_sum = sum(amt for _, amt in boards)
+            top3 = boards[:3]
+            top3_sum = sum(amt for _, amt in top3)
             top3_ratio = (top3_sum / total_sum) if total_sum > 0 else 0.435
-            top3_names = [item['f14'] for item in diff[:3]]
-            print(f"     [OK] 一级行业前3: {top3_names}, 前3成交额: {top3_sum/1e8:.2f}亿, 总成交: {total_sum/1e8:.2f}亿, 占比: {top3_ratio * 100:.2f}%")
+            top3_desc = ', '.join(f"{name}({amt/1e8:.0f}亿)" for name, amt in top3)
+            print(f"     [OK] 成交额前3行业: {top3_desc} | 前3合计: {top3_sum/1e8:.2f}亿, "
+                  f"全部{len(boards)}个行业合计: {total_sum/1e8:.2f}亿, 占比: {top3_ratio * 100:.2f}%")
             return top3_ratio, top3_sum / 1e8
+
+        print(f"     [WARN] 仅取到 {len(boards)} 个有效行业 (预期31个), 放弃本次抓取")
     except Exception as e:
         print(f"     [WARN] 行业集中度拉取异常: {e}")
     return 0.435, 7950.0

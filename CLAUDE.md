@@ -106,6 +106,11 @@ industry concentration. Two things follow:
 
 The Eastmoney URL deliberately uses `t:1` (31 primary industries). Switching to `t:2` yields ~100
 sub-sectors and halves the top-3 ratio, silently breaking comparability with the Wind history.
+The "top 3" is by **traded value**, not by price gain: `fid=f6&po=1` asks the server for turnover-
+descending order (f6 = 成交额, f3 = 涨跌幅), but `fetch_industry_concentration` re-sorts by amount
+locally rather than trusting the response order, because Eastmoney's board lists default to
+change-percent order and a silently ignored `fid` would otherwise yield a "top-3 by gainers" ratio
+that still looks plausible.
 
 ## `_latest.xlsx` fallback trap
 
