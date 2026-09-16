@@ -87,17 +87,22 @@ def fetch_market_turnover_and_breadth():
         print(f"     [WARN] 实时成交额拉取异常: {e}")
     return 18220.0
 
-def fetch_industry_concentration():
+def fetch_industry_concentration(fallback_ratio=None, fallback_amt=None):
     """
-    抓取一级大类行业 (31个行业) 成交额集中度
-    口径: 按【成交额】降序取前 3 个一级行业, 前3成交额合计 / 全部一级行业成交额合计
-          (不是涨幅前3的行业占比; 与 Wind 申万一级行业口径对齐, 前3占比常态为 40%~48%)
+    抓取东财【行业板块】成交额集中度
+    口径: 按成交额降序取前 3 个行业板块, 前3成交额合计 / 全部行业板块成交额合计
+          (既不是涨幅前3, 也不是地域板块)
+
+    注意: 东财行业板块约 86 个, 比 Wind 申万一级 (31个) 细得多,
+          因此前3占比 (约20%) 显著低于 2026-08-25 之前的 Wind 历史数据 (均值 36.76%)。
+          这是已知的量纲断层, 会压低该维度的滚动分位数。
     """
-    print(">> [4/5] 正在获取一级行业 (31个行业) 成交额集中度...")
+    print(">> [4/5] 正在获取东财行业板块成交额集中度...")
     try:
         # 东财字段: f6=成交额, f3=涨跌幅, f14=名称。fid=f6&po=1 即请求服务端按成交额降序
-        # 使用 t:1 (一级行业 31 个板块) 避免 t:2 (细分100板块导致占比被低估为20%)
-        url_ind = 'http://push2delay.eastmoney.com/api/qt/clist/get?pn=1&pz=50&po=1&np=1&fltt=2&invt=2&fid=f6&fs=m:90+t:1+f:!50&fields=f12,f14,f2,f3,f6'
+        # 板块池 fs: t:1=地域板块(省份), t:2=行业板块, t:3=概念板块 —— 必须用 t:2
+        # pz 必须大于板块总数: 行业板块约 86 个, pz=50 会截断导致分母偏小、占比被高估
+        url_ind = 'http://push2delay.eastmoney.com/api/qt/clist/get?pn=1&pz=200&po=1&np=1&fltt=2&invt=2&fid=f6&fs=m:90+t:2+f:!50&fields=f12,f14,f2,f3,f6'
         r_ind = requests.get(url_ind, headers=headers_em, timeout=8)
         diff = r_ind.json().get('data', {}).get('diff', [])
 
@@ -107,20 +112,30 @@ def fetch_industry_concentration():
                   for item in diff if isinstance(item.get('f6'), (int, float))]
         boards.sort(key=lambda x: x[1], reverse=True)
 
-        if len(boards) >= 20:
+        if len(boards) >= 50:
             total_sum = sum(amt for _, amt in boards)
             top3 = boards[:3]
             top3_sum = sum(amt for _, amt in top3)
-            top3_ratio = (top3_sum / total_sum) if total_sum > 0 else 0.435
-            top3_desc = ', '.join(f"{name}({amt/1e8:.0f}亿)" for name, amt in top3)
-            print(f"     [OK] 成交额前3行业: {top3_desc} | 前3合计: {top3_sum/1e8:.2f}亿, "
-                  f"全部{len(boards)}个行业合计: {total_sum/1e8:.2f}亿, 占比: {top3_ratio * 100:.2f}%")
-            return top3_ratio, top3_sum / 1e8
+            top3_ratio = (top3_sum / total_sum) if total_sum > 0 else 0.0
+            if top3_ratio > 0:
+                top3_desc = ', '.join(f"{name}({amt/1e8:.0f}亿)" for name, amt in top3)
+                print(f"     [OK] 成交额前3行业: {top3_desc} | 前3合计: {top3_sum/1e8:.2f}亿, "
+                      f"全部{len(boards)}个行业板块合计: {total_sum/1e8:.2f}亿, 占比: {top3_ratio * 100:.2f}%")
+                return top3_ratio, top3_sum / 1e8
 
-        print(f"     [WARN] 仅取到 {len(boards)} 个有效行业 (预期31个), 放弃本次抓取")
+        print(f"     [WARN] 有效行业板块仅 {len(boards)} 个 (预期约86个), 疑似接口截断或异常")
     except Exception as e:
         print(f"     [WARN] 行业集中度拉取异常: {e}")
-    return 0.435, 7950.0
+
+    # 抓取失败时沿用上一交易日数值。切勿写死魔数: 口径一旦变更,
+    # 固定常量会变成极端离群值, 把该维度的分位数推到 0 或 100。
+    if fallback_ratio is not None and not pd.isna(fallback_ratio):
+        amt = float(fallback_amt) if fallback_amt is not None and not pd.isna(fallback_amt) else 0.0
+        print(f"     [WARN] 沿用上一交易日行业集中度: {float(fallback_ratio) * 100:.2f}%")
+        return float(fallback_ratio), amt
+
+    print("     [WARN] 无可用回退值, 返回 0 占位 (该行数据不可信)")
+    return 0.0, 0.0
 
 def auto_sync_and_append():
     """
@@ -169,7 +184,10 @@ def auto_sync_and_append():
     if new_dates:
         print(f"\n>> [5/5] 识别到 {len(new_dates)} 个已收盘新交易日需自动追加: {new_dates}")
         total_market_amt = fetch_market_turnover_and_breadth()
-        top3_ratio, top3_amt = fetch_industry_concentration()
+        # 抓取失败时以上一交易日的行业集中度回退, 保证量纲与当前口径一致
+        last_ratio = df_excel.iloc[-1, 3] if len(df_excel) > 0 else None
+        last_amt = df_excel.iloc[-1, 7] if len(df_excel) > 0 else None
+        top3_ratio, top3_amt = fetch_industry_concentration(last_ratio, last_amt)
 
         for new_d in new_dates:
             # 若两融已披露则用官方值，未披露则取最近已知值估算

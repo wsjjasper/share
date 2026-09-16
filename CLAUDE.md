@@ -104,13 +104,28 @@ industry concentration. Two things follow:
   by more than 1.0 亿. This is what makes the same-day estimate converge to the official number
   across the three daily CI runs.
 
-The Eastmoney URL deliberately uses `t:1` (31 primary industries). Switching to `t:2` yields ~100
-sub-sectors and halves the top-3 ratio, silently breaking comparability with the Wind history.
+The Eastmoney `fs` board pool is load-bearing and easy to get wrong: `t:1` is **geographic**
+boards (31 provinces), `t:2` is industry boards (~86), `t:3` is concept boards. The code used
+`t:1` until 2026-09-16 on the belief that it meant "31 primary industries" — the province count
+coincides exactly with 申万一级's 31 sectors, and the resulting ratio (40–43%) sat inside the Wind
+history's range (25–52%), so the series looked continuous while measuring geography. It now uses
+`t:2`. Two constraints follow:
+
+- **`pz` must exceed the board count.** With ~86 industry boards, the old `pz=50` would truncate
+  the response, shrinking the denominator and inflating the ratio. It is now `pz=200`, and the
+  function refuses a response with fewer than 50 boards rather than computing from a partial set.
+- **A caliber break exists at 2026-08-26.** Rows before it are Wind's real industry figures
+  (mean 36.76%); 2026-08-26 to 2026-09-16 are geographic (mean 41.91%); `t:2` values run ~20%,
+  below the trailing window's minimum, so `成交额前三行业占比_分位` pins to 0 until the 252-day
+  window flushes the older caliber out — roughly a year.
+
 The "top 3" is by **traded value**, not by price gain: `fid=f6&po=1` asks the server for turnover-
 descending order (f6 = 成交额, f3 = 涨跌幅), but `fetch_industry_concentration` re-sorts by amount
 locally rather than trusting the response order, because Eastmoney's board lists default to
 change-percent order and a silently ignored `fid` would otherwise yield a "top-3 by gainers" ratio
-that still looks plausible.
+that still looks plausible. On any fetch failure the function carries forward the previous trading
+day's ratio (passed in by the caller) instead of returning a hardcoded constant — a fixed magic
+number becomes an extreme outlier the moment the caliber changes, pinning the percentile to 0 or 100.
 
 ## `_latest.xlsx` fallback trap
 
