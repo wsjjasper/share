@@ -683,12 +683,12 @@ html_content = r"""<!DOCTYPE html>
             us: {
                 name: '美股',
                 title: '美股综合情绪指标研报',
-                subtitle: 'SPDR 板块 ETF + VIX 滚动252日分位数体系',
+                subtitle: '标普100成分股 + VIX 滚动252日分位数体系',
                 axisLeft: '成交额(十亿美元) / VIX',
                 axisRight: '上涨/集中度 (%)',
                 unit: '',
                 subs: [
-                    { label: '全市场成交额', hint: '活跃度',   raw: '成交额(十亿美元)',  color: '#3b82f6' },
+                    { label: '成分股成交额', hint: '活跃度',   raw: '成交额(十亿美元)',  color: '#3b82f6' },
                     { label: '板块集中度',   hint: '前3板块',  raw: '前3板块占比(%)',    color: '#f59e0b' },
                     { label: '上涨个股占比', hint: '赚钱效应', raw: '上涨个股占比(%)',   color: '#10b981' },
                     { label: 'VIX (反向)',   hint: '恐慌情绪', raw: 'VIX',              color: '#ef4444' }
@@ -699,13 +699,13 @@ html_content = r"""<!DOCTYPE html>
                 staticChart: null,   // 美股没有 matplotlib 静态图, 整节隐藏
 
                 footerSystem: '美股综合情绪指标研究与量化分析系统 · 自动归档至 GitHub docs',
-                footerSource: '数据来源: SPDR 板块 ETF + CBOE VIX (Yahoo Finance) · 滚动 252 交易日历史分位数模型',
+                footerSource: '数据来源: 标普100成分股 + CBOE VIX (Yahoo Finance) · 滚动 252 交易日历史分位数模型',
                 method: {
-                    intro: '基于 <strong>11 只 SPDR 板块 ETF 与 CBOE VIX</strong> 的日频数据，从“交易活跃度、板块抱团集中度、赚钱效应广度、恐慌情绪”四个独立维度综合衡量市场水温：',
+                    intro: '基于 <strong>标普100成分股与 CBOE VIX</strong> 的日频数据，从“交易活跃度、板块抱团集中度、赚钱效应广度、恐慌情绪”四个独立维度综合衡量市场水温：',
                     formula: '成交额分位 + 板块集中度分位 + 上涨个股分位 + VIX反向分位',
                     rows: [
-                        ['全市场成交额', '11 只 SPDR 板块 ETF 成交额合计 (十亿美元)', '衡量交投活跃度与资金参与度'],
-                        ['板块集中度', '成交额最大的前3个板块合计 / 板块成交额合计', '衡量主线资金抱团集中度与分化程度'],
+                        ['成分股成交额', '标普100成分股当日成交额合计 (十亿美元)', '衡量交投活跃度与资金参与度'],
+                        ['板块集中度', '按 GICS 11 板块汇总后, 成交额前3板块 / 合计', '衡量主线资金抱团集中度与分化程度'],
                         ['上涨个股占比', '当日收涨数量 / 标普100样本数 (大盘股口径)', '衡量市场广度与普遍赚钱效应'],
                         ['VIX (反向)', 'CBOE 波动率指数收盘价，取分位后反向', 'VIX 越高越恐慌，故反向计入情绪']
                     ]

@@ -43,20 +43,38 @@ if sys.platform.startswith('win'):
 FETCH_TIMEOUT = (10, 30)   # (连接, 读取) 秒
 MAX_RETRY = 3
 
-# SPDR 11 个 GICS 板块 ETF —— 完整切分标普 500 的行业结构
-SECTOR_ETFS = ['XLK', 'XLF', 'XLV', 'XLY', 'XLP', 'XLE', 'XLI', 'XLB', 'XLRE', 'XLU', 'XLC']
-MIN_SECTORS = 9            # 当日有效板块少于此数则该日留空
+# 市场样本: 标普 100 成分 (大盘股)。成交额、板块集中度、上涨占比三项全部由这一份
+# 数据算出 —— 与 A 股用一次申万调用同时得到集中度与换手率是同一思路: 同源即自洽。
+#
+# 早先板块集中度用的是 11 只 SPDR 板块 ETF 的成交额。那个口径有两个毛病:
+#   1. 只有 11 个分母, 前 3 占比数学下限就是 3/11 = 27.3%, 879 天全部挤在
+#      35.5~60.1% 之间(标准差 3.47pp)。这么窄的分布喂进滚动分位, 分位就是在放大
+#      噪声 —— 101/879 天分位单日跳动超过 50 分。
+#   2. ETF 自身成交量反映的是机构对冲与申赎流, 不是板块内个股的活跃程度。
+# 改成按 GICS 板块汇总成分股成交额后, 衡量的是真实个股交易的集中度。
+UNIVERSE_SECTORS = {
+    '信息技术': ['AAPL', 'ACN', 'ADBE', 'AMD', 'AVGO', 'CRM', 'CSCO', 'IBM', 'INTC',
+                 'INTU', 'MSFT', 'NVDA', 'ORCL', 'QCOM', 'TXN'],
+    # 2023 年 GICS 调整后 V / MA / PYPL 由信息技术划入金融
+    '金融': ['AIG', 'AXP', 'BAC', 'BLK', 'BRK-B', 'C', 'COF', 'GS', 'JPM', 'MA',
+             'MET', 'MS', 'PYPL', 'SCHW', 'USB', 'V', 'WFC'],
+    '医疗保健': ['ABBV', 'ABT', 'AMGN', 'BMY', 'CVS', 'DHR', 'GILD', 'JNJ', 'LLY',
+                 'MDT', 'MRK', 'PFE', 'TMO', 'UNH'],
+    '可选消费': ['AMZN', 'BKNG', 'F', 'GM', 'HD', 'LOW', 'MCD', 'NKE', 'SBUX', 'TGT', 'TSLA'],
+    '日常消费': ['CL', 'COST', 'KHC', 'KO', 'MDLZ', 'MO', 'PEP', 'PG', 'PM', 'WMT'],
+    '能源': ['COP', 'CVX', 'XOM'],
+    '工业': ['BA', 'CAT', 'DE', 'EMR', 'FDX', 'GD', 'GE', 'HON', 'LMT', 'MMM',
+             'RTX', 'UNP', 'UPS'],
+    '原材料': ['DOW', 'LIN'],
+    '房地产': ['AMT', 'SPG'],
+    '公用事业': ['DUK', 'EXC', 'NEE', 'SO'],
+    '通信服务': ['CHTR', 'CMCSA', 'DIS', 'GOOG', 'GOOGL', 'META', 'NFLX', 'T', 'TMUS'],
+}
+SECTOR_OF = {t: sec for sec, tics in UNIVERSE_SECTORS.items() for t in tics}
+UNIVERSE = sorted(SECTOR_OF)
 
-# 市场宽度的统计样本。默认用标普 100 成分 (大盘股), 可自行替换为更宽的列表;
-# 注意这是大盘股口径, 与 A 股"全部成份股"的广度含义并不完全等同。
-UNIVERSE = """
-AAPL ABBV ABT ACN ADBE AIG AMD AMGN AMT AMZN AVGO AXP BA BAC BK BKNG BLK BMY BRK-B C
-CAT CHTR CL CMCSA COF COP COST CRM CSCO CVS CVX DE DHR DIS DOW DUK EMR EXC F FDX GD
-GE GILD GM GOOG GOOGL GS HD HON IBM INTC INTU JNJ JPM KHC KO LIN LLY LMT LOW MA MCD
-MDLZ MDT MET META MMM MO MRK MS MSFT NEE NFLX NKE NVDA ORCL PEP PFE PG PM PYPL QCOM
-RTX SBUX SCHW SO SPG T TGT TMO TMUS TSLA TXN UNH UNP UPS USB V VZ WFC WMT XOM
-""".split()
-MIN_UNIVERSE = 60          # 当日有效样本少于此数则宽度留空
+MIN_SECTORS = 9            # 当日有效板块少于此数则集中度留空 (共 11 个)
+MIN_UNIVERSE = 60          # 当日有效样本少于此数则该项留空
 
 VIX_SYMBOL = '^VIX'
 
@@ -123,64 +141,68 @@ def _field(df, name, tickers):
     return sub
 
 
-def fetch_sector_metrics(start, end):
-    """板块 ETF -> 每日成交额合计(十亿美元) 与 前3占比(%)。"""
-    print(f">> [1/3] 下载 {len(SECTOR_ETFS)} 只板块 ETF ({start} ~ {end}) ...")
-    df = _download(SECTOR_ETFS, start, end)
-    if df is None:
-        return pd.DataFrame()
+def fetch_equity_metrics(start, end):
+    """
+    一次下载 UNIVERSE 的收盘价与成交量, 同时得出三项指标。
 
-    close, vol = _field(df, 'Close', SECTOR_ETFS), _field(df, 'Volume', SECTOR_ETFS)
-    if close.empty or vol.empty:
-        print("     [WARN] 缺少 Close/Volume 字段")
-        return pd.DataFrame()
+    同源的好处与 A 股一致: 成交额与集中度出自同一份数据, 不会互相打架。
 
-    dollar = (close * vol).dropna(how='all')          # 成交额 = 收盘价 x 成交量
-    rows = []
-    for d, r in dollar.iterrows():
-        vals = r.dropna()
-        vals = vals[vals > 0]
-        if len(vals) < MIN_SECTORS:
-            continue
-        total = float(vals.sum())
-        top3 = float(vals.sort_values(ascending=False).head(3).sum())
-        rows.append({'date': pd.Timestamp(d).strftime('%Y-%m-%d'),
-                     'dollar_volume_b': total / 1e9,
-                     'top3_share_pct': top3 / total * 100})
-    print(f"     [OK] {len(rows)} 个交易日")
-    return pd.DataFrame(rows)
+      dollar_volume_b  成分股成交额合计 (十亿美元)
+      top3_share_pct   按 GICS 板块汇总后, 成交额前 3 个板块占合计的比重 (%)
+      rise_pct         当日收涨比例 (%)
 
-
-def fetch_breadth(start, end):
-    """UNIVERSE -> 每日收涨比例(%)。"""
-    print(f">> [2/3] 下载 {len(UNIVERSE)} 只成分股用于市场宽度 ...")
+    缺数据一律留空, 不写占位值。
+    """
+    print(f">> [1/2] 下载 {len(UNIVERSE)} 只成分股 ({start} ~ {end}) ...")
     df = _download(UNIVERSE, start, end)
     if df is None:
         return pd.DataFrame()
 
-    close = _field(df, 'Close', UNIVERSE)
+    close, vol = _field(df, 'Close', UNIVERSE), _field(df, 'Volume', UNIVERSE)
     if close.empty:
         print("     [WARN] 缺少 Close 字段")
         return pd.DataFrame()
 
-    # fill_method=None: 默认的 'pad' 会把停牌日前向填成前一日收盘,
-    # 涨跌幅变成 0 —— 该股仍计入分母却算作"没涨", 系统性压低宽度。
-    # 置 None 后停牌日得到 NaN, 下面 dropna 会把它从分子分母里一起排掉。
+    dollar = (close * vol) if not vol.empty else pd.DataFrame()
+    # fill_method=None: 默认的 'pad' 会把停牌日前向填充成前一日收盘, 涨跌幅变成 0 ——
+    # 该股仍计入分母却算作"没涨", 系统性压低宽度。置 None 后停牌日得到 NaN, 被一并排除。
     chg = close.pct_change(fill_method=None)
-    rows = []
-    for d, r in chg.iterrows():
-        vals = r.dropna()
-        if len(vals) < MIN_UNIVERSE:
-            continue
-        rows.append({'date': pd.Timestamp(d).strftime('%Y-%m-%d'),
-                     'rise_pct': float((vals > 0).sum()) / len(vals) * 100})
-    print(f"     [OK] {len(rows)} 个交易日")
-    return pd.DataFrame(rows)
 
+    rows = []
+    for d in close.index:
+        rec = {'date': pd.Timestamp(d).strftime('%Y-%m-%d')}
+
+        if not dollar.empty:
+            dv = dollar.loc[d].dropna()
+            dv = dv[dv > 0]
+            if len(dv) >= MIN_UNIVERSE:
+                rec['dollar_volume_b'] = float(dv.sum()) / 1e9
+                by_sector = {}
+                for tic, val in dv.items():
+                    sec = SECTOR_OF.get(tic)
+                    if sec:
+                        by_sector[sec] = by_sector.get(sec, 0.0) + float(val)
+                total = sum(by_sector.values())
+                if len(by_sector) >= MIN_SECTORS and total > 0:
+                    top3 = sum(sorted(by_sector.values(), reverse=True)[:3])
+                    rec['top3_share_pct'] = top3 / total * 100
+
+        c = chg.loc[d].dropna()
+        if len(c) >= MIN_UNIVERSE:
+            rec['rise_pct'] = float((c > 0).sum()) / len(c) * 100
+
+        if len(rec) > 1:          # 只有日期就不要这一行
+            rows.append(rec)
+
+    out = pd.DataFrame(rows)
+    got = {c: int(out[c].notna().sum()) for c in
+           ('dollar_volume_b', 'top3_share_pct', 'rise_pct') if c in out.columns}
+    print(f"     [OK] {len(out)} 个交易日 {got}")
+    return out
 
 def fetch_vix(start, end):
     """^VIX 收盘价。"""
-    print(">> [3/3] 下载 VIX ...")
+    print(">> [2/2] 下载 VIX ...")
     df = _download(VIX_SYMBOL, start, end)
     if df is None:
         return pd.DataFrame()
@@ -204,13 +226,13 @@ def main():
     print(">> 美股情绪指标数据抓取")
     print("=" * 56)
 
-    sectors, breadth, vix = fetch_sector_metrics(start, end), fetch_breadth(start, end), fetch_vix(start, end)
-    if sectors.empty and breadth.empty and vix.empty:
+    equity, vix = fetch_equity_metrics(start, end), fetch_vix(start, end)
+    if equity.empty and vix.empty:
         print("\n[错误] 三项数据全部抓取失败, 不写入任何内容")
         sys.exit(1)
 
     out = None
-    for part in (sectors, breadth, vix):
+    for part in (equity, vix):
         if part.empty:
             continue
         out = part if out is None else out.merge(part, on='date', how='outer')
