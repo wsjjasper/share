@@ -41,6 +41,16 @@ SW_MIN_INDUSTRIES = 25
 # 用 _request_timeout 兜住(申万那条路已自己直连, 不走这里)。
 AK_FETCH_TIMEOUT = (10, 60)    # (连接, 读取) 秒
 
+# 涨跌家数: 快照无历史, 漏掉就只能靠
+# backfill_breadth_sina.py 逐只翻日线重建(约 26 分钟),
+# 所以宁可多试几次, 也备一个不同主机的源。
+BREADTH_MAX_RETRY = 3
+BREADTH_MIN_STOCKS = 3000
+BREADTH_MIN_NONZERO = 0.5   # 有涨跌的个股占比下限, 用于识别盘前归零的快照
+SINA_LIST_URL = ("http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+                 "Market_Center.getHQNodeData")
+SINA_MAX_PAGES = 100
+
 # --- 为什么不用 akshare.index_analysis_daily_sw ---
 # 实测 (2026-09-16) 到申万的 TCP 连接每次都是 0.2s 建成, 但 TLS 握手大约只有 1/4
 # 的概率能成功, 其余会一直卡在握手上。akshare 每翻一页都用模块级 requests.get
@@ -345,35 +355,88 @@ def fetch_sw_daily_metrics(start_date, end_date):
         return {}
 
 
+def _breadth_from_chg(chg, src):
+    """由一组涨跌幅算出 (上涨家数, 总家数, 占比小数); 样本太少则判为不可信。"""
+    chg = pd.to_numeric(pd.Series(chg), errors='coerce').dropna()
+    total = len(chg)
+    if total < BREADTH_MIN_STOCKS:
+        print(f"     [WARN] {src} 仅 {total} 只个股 (预期约5000+), 放弃")
+        return None
+    # 盘前重置陷阱: 新交易日开盘前, 新浪列表把 trade/changepercent 全部归零
+    # (settlement 还留着上一日收盘), 东财盘前同理。此时"上涨 0 家"会一路通过
+    # 家数检查被当成 0.00% 写进去 —— 真实交易日绝大多数个股都是有涨跌的,
+    # 所以用非零比例把这种快照挡在外面。
+    nonzero = int((chg != 0).sum())
+    if nonzero < total * BREADTH_MIN_NONZERO:
+        print(f"     [WARN] {src} 有涨跌的只有 {nonzero}/{total} 只, "
+              f"多半是盘前/未开盘的重置快照, 放弃")
+        return None
+    up = int((chg > 0).sum())
+    ratio = up / total
+    print(f"     [OK] {src}: 上涨 {up} / {total} 家, 占比 {ratio * 100:.2f}%")
+    return up, total, ratio
+
+
+def _breadth_em():
+    """东财全 A 快照 (akshare)。"""
+    with _request_timeout(AK_FETCH_TIMEOUT):
+        df = ak.stock_zh_a_spot_em()
+    if df is None:
+        raise RuntimeError('东财快照返回空')
+    return _breadth_from_chg(df['涨跌幅'], '东财快照')
+
+
+def _breadth_sina():
+    """
+    新浪全 A 列表兜底 —— 每页 100 只, 每条自带 changepercent, 约 56 页 / 18 秒。
+
+    与东财完全不同的主机, 东财限流或封连接时它照常可用 (含北交所 bj 前缀)。
+    """
+    s = requests.Session()
+    s.headers.update({'User-Agent': SW_UA, 'Referer': 'http://finance.sina.com.cn/'})
+    chg, page = [], 1
+    while page <= SINA_MAX_PAGES:
+        r = s.get(SINA_LIST_URL,
+                  params={'page': page, 'num': 100, 'sort': 'symbol', 'asc': 1,
+                          'node': 'hs_a'},
+                  timeout=AK_FETCH_TIMEOUT)
+        arr = json.loads(r.text) if r.text.strip() else []
+        if not arr:
+            break
+        chg += [x.get('changepercent') for x in arr]
+        page += 1
+    return _breadth_from_chg(chg, '新浪列表')
+
+
 def fetch_market_breadth():
     """
-    全市场上涨个股占比 —— 取自东财全 A 快照, 统计涨跌幅 > 0 的家数。
+    全市场上涨个股占比 —— 统计涨跌幅 > 0 的家数。
 
     注意: 这是快照, 没有历史。只能代表调用当时最新的那个交易日, 因此调用方
-    必须确认目标日期就是最新交易日才可使用; 错过的交易日无法事后回补
-    (akshare 中不存在带日期区间的市场宽度接口)。
+    必须确认目标日期就是最新交易日才可使用。漏掉的交易日事后只能用
+    backfill_breadth_sina.py 逐只翻个股日线重建 (约 26 分钟), 所以这里值得
+    多试几次 —— 一次瞬时断连换来的是那一天永久写成 NaN。
+
+    先试东财, 每次失败退避重试; 全部失败再换新浪(不同主机)兜底。
 
     :return: (上涨家数, 总家数, 上涨占比小数) 或 None
     """
     print(">> 正在获取全市场涨跌家数快照...")
-    try:
-        with _request_timeout(AK_FETCH_TIMEOUT):
-            df = ak.stock_zh_a_spot_em()
-        if df is None or len(df) < 3000:
-            print(f"     [WARN] 快照仅 {0 if df is None else len(df)} 只个股 (预期约5000+), 放弃")
-            return None
-        chg = pd.to_numeric(df['涨跌幅'], errors='coerce').dropna()
-        total = len(chg)
-        if total < 3000:
-            print(f"     [WARN] 有效涨跌幅仅 {total} 条, 放弃")
-            return None
-        up = int((chg > 0).sum())
-        ratio = up / total
-        print(f"     [OK] 上涨 {up} / {total} 家, 占比 {ratio * 100:.2f}%")
-        return up, total, ratio
-    except Exception as e:
-        print(f"     [WARN] 涨跌家数拉取异常: {e}")
-        return None
+    for name, fn in (('东财', _breadth_em), ('新浪', _breadth_sina)):
+        for attempt in range(1, BREADTH_MAX_RETRY + 1):
+            try:
+                got = fn()
+                if got is not None:
+                    return got
+                break          # 取到了但样本不合格, 换下一个源, 重试没用
+            except Exception as e:
+                print(f"     [重试 {attempt}/{BREADTH_MAX_RETRY}] {name}: "
+                      f"{type(e).__name__}: {str(e)[:80]}")
+                if attempt < BREADTH_MAX_RETRY:
+                    time.sleep(2 ** attempt)
+        print(f"     [WARN] {name} 源不可用, 尝试下一个")
+    print("     [WARN] 所有涨跌家数源都失败, 该日留空")
+    return None
 
 
 def auto_sync_and_append():

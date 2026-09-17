@@ -23,6 +23,12 @@ python update.py
 python auto_fetch_daily.py     # append/repair rows in 副本万得全A.xlsx
 python sentiment_indicator.py  # 情绪指标_结果.xlsx + 情绪指标_图表.png
 python generate_html.py        # index.html AND docs/index.html
+
+# Repair scripts for historical gaps the daily path cannot reach. All three default to a
+# dry run that validates and previews; --apply writes. Each has its own section below.
+python backfill_industry_sw.py   # 行业集中度 (col 3/7) — 申万, seconds
+python backfill_breadth_sina.py  # 上涨个股占比 (col 4/8/9/11) — 逐只日线, ~26 min
+python rebuild_turnover_sw.py    # 换手率 (col 2) — 整列重建, --start 2015-01-01
 ```
 
 Dependencies (matching CI): `pip install pandas numpy akshare requests matplotlib openpyxl`.
@@ -188,13 +194,28 @@ Three properties matter:
   `SW_REPAIR_LOOKBACK_DAYS` (7) on a later run — the same shape as the margin self-repair, and the
   reason the three daily CI runs matter for these columns too.
 
-**Advancing-stock share has no historical source.** `fetch_market_breadth` counts
-`涨跌幅 > 0` over `stock_zh_a_spot_em`, a whole-market snapshot with no date parameter — nothing in
-akshare returns market breadth for a past date. Two consequences: the value is only written when
-the date being appended is the newest closed trading day (`all_trade_dates[-1]`), so a run
-catching up on several days leaves the older ones `NaN` rather than repeating one figure across
-them; and the repair pass cannot fill it, so a trading day missed by all three CI runs stays
-`NaN` permanently. The fetch also rejects a snapshot carrying fewer than 3000 stocks.
+**Advancing-stock share is snapshot-only on the daily path.** No free API returns market breadth
+for a past date, so `fetch_market_breadth` counts `涨跌幅 > 0` over a whole-market snapshot. It is
+only written when the date being appended is the newest closed trading day (`all_trade_dates[-1]`),
+so a run catching up on several days leaves the older ones `NaN` rather than repeating one figure.
+A day missed by all three CI runs is no longer lost, though — `backfill_breadth_sina.py` can
+reconstruct it (see below).
+
+Three defenses, all added after real failures:
+
+- **Retries.** It used to return `None` on the first exception. Because the snapshot has no
+  history, one transient disconnect meant that day was `NaN` forever. Now `BREADTH_MAX_RETRY` (3)
+  attempts with exponential backoff.
+- **A second host.** When Eastmoney rate-limits (it will — it started refusing connections outright
+  after a burst of testing), `_breadth_sina` falls back to the 新浪 list endpoint, which carries
+  `changepercent` per stock across ~56 pages of 100 in about 18s and covers 北交所 too.
+- **A zero-snapshot guard, which matters more than it looks.** Before the next session opens, the
+  新浪 list resets every `trade` and `changepercent` to `0.000` while `settlement` still holds the
+  prior close; Eastmoney behaves the same way pre-open. That snapshot has ~5500 rows, so it sails
+  past the `BREADTH_MIN_STOCKS` (3000) check and yields **0 advancing = 0.00% breadth**, which is
+  a plausible-looking number that is catastrophically wrong. `BREADTH_MIN_NONZERO` (0.5) requires
+  that at least half the stocks show a non-zero move; a real trading day is near 100%. This hole
+  existed in the original Eastmoney-only code too and simply had not been hit yet.
 
 **Caliber history of this column.** Rows through 2026-08-25 are Wind's own industry figures
 (mean 36.76%). 2026-08-26 to 2026-09-16 were fetched from Eastmoney `fs=m:90+t:1`, the
@@ -235,6 +256,38 @@ select by **date range**, not by value. The 上涨个股占比 column in those r
 the placeholder `0.585`, which no source can repair (see the breadth note above).
 
 
+
+## Rebuilding breadth: `backfill_breadth_sina.py`
+
+Reconstructs 上涨个股占比 for past dates by counting, stock by stock, how many closed above their
+previous close. It exists because nothing returns breadth by date: the exchanges' own summaries
+carry turnover, market cap and turnover rate but no advance/decline counts; every date-parameterized
+akshare function is either unrelated or a 涨停板 pool; 乐咕's 赚钱效应 is a snapshot whose page
+structure changed (the function raises); and guessing at 乐咕 JSON API paths returns 404.
+
+The cost is driven by the **number of stocks, not the number of dates** — each request returns a
+whole date range — so `DATALEN` (60) is nearly free and is set to leave ~44 trading days outside the
+backfill range to validate against. The universe comes from the 新浪 list endpoint (~5560 including
+北交所) and the bars from 新浪 `CN_MarketData.getKLineData` at ~0.28s each, so a full pass is about
+26 minutes. Use 新浪, not Eastmoney: Eastmoney throttles a burst of this size within a few hundred
+requests and then closes connections. Only per-date counters are cached (`_breadth_cache.tmp`,
+gitignored), never the bars, and the processed-symbol list makes the run resumable.
+
+Measured against the Wind rows: MAD **0.09pp**, max deviation 0.46pp, correlation **1.0000** over 41
+trading days. It reproduces the column almost exactly.
+
+**The validation window must exclude the backfill range** (`--start`), the same rule
+`backfill_industry_sw.py` follows. Leaving it in cost real accuracy here: 2026-08-24 and 2026-08-25
+are themselves bad rows, and with them inside the window MAD read 1.22pp and correlation 0.9742 —
+a flawless reconstruction looked merely adequate.
+
+**How those two rows were caught, and why it generalizes.** 2026-08-21 and 2026-08-24 carry
+*identical* values in three columns at once — 上涨占比 45.134501, 上涨家数 2500, 成份数 5539 — which is
+the same "one snapshot written to several dates" bug already recorded for 2026-08-27/08-28. Hence
+the default `--start` is 2026-08-24, not 2026-08-26, and 18 rows were rewritten rather than 16.
+**Duplicate values across adjacent dates are the signature of this whole class of bug**; when a
+backfill disagrees with stored data, check whether the stored row is a copy of its neighbour before
+assuming the new source is wrong.
 
 ## Rebuilding the turnover column: `rebuild_turnover_sw.py`
 
