@@ -335,7 +335,7 @@ html_content = r"""<!DOCTYPE html>
                 <div>
                     <h3 class="text-sm font-semibold text-slate-700 mb-2 flex items-center">
                         <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block mr-2"></span>
-                        原始指标绝对值走势 (双Y轴: 换手率/融资占比 vs 上涨家数占比/行业集中度)
+                        <span id="chart-raw-title">原始指标绝对值走势 (双Y轴: 换手/融资 (%) vs 上涨/集中度 (%))</span>
                     </h3>
                     <div id="chart-raw" class="w-full h-72"></div>
                 </div>
@@ -353,7 +353,7 @@ html_content = r"""<!DOCTYPE html>
                         </svg>
                         四大微观情绪子指标
                     </h2>
-                    <p class="text-sm text-slate-600 leading-relaxed mb-4">
+                    <p class="text-sm text-slate-600 leading-relaxed mb-4" id="method-intro">
                         基于 <strong>万得全A (881001.WI)</strong> 核心日频交易数据，从“交易活跃度、资金抱团集中度、赚钱效应广度、杠杆做多情绪”四个独立维度综合衡量市场水温：
                     </p>
 
@@ -367,7 +367,7 @@ html_content = r"""<!DOCTYPE html>
                                     <th class="px-3 py-2.5">市场微观含义</th>
                                 </tr>
                             </thead>
-                            <tbody class="divide-y divide-slate-100 bg-white">
+                            <tbody class="divide-y divide-slate-100 bg-white" id="method-tbody">
                                 <tr class="hover:bg-slate-50">
                                     <td class="px-3 py-2.5 font-bold text-slate-900">1</td>
                                     <td class="px-3 py-2.5 font-semibold text-blue-600">换手率</td>
@@ -399,7 +399,7 @@ html_content = r"""<!DOCTYPE html>
 
                 <div class="mt-4 p-3 bg-blue-50/70 border border-blue-200/80 rounded-xl text-xs text-blue-800">
                     <strong>💡 为什么需要分位数转化？</strong>
-                    直接看换手率或成交额等绝对数值，会受到市场总市值膨胀、制度变革等长期趋势影响。通过转换为“滚动252日相对历史分位数”，可以直接比较当前情绪与过去一年相比是冷是热。
+                    直接看这些子指标的绝对数值，会受到市场规模膨胀、制度变革等长期趋势影响。通过转换为“滚动252日相对历史分位数”，可以直接比较当前情绪与过去一年相比是冷是热。
                 </div>
             </div>
 
@@ -436,7 +436,7 @@ html_content = r"""<!DOCTYPE html>
                             </div>
 
                             <p class="text-xs text-slate-400 mt-2">
-                                📌 <strong>通俗含义</strong>：若今日换手率分位数为 <strong>85%</strong>，代表今日活跃度比过去一年 <strong>85% 的交易日都要火热</strong>；0% 表示过去一年最低，100% 表示过去一年最高。
+                                📌 <strong>通俗含义</strong>：若今日某子指标的分位数为 <strong>85%</strong>，代表该维度比过去一年 <strong>85% 的交易日都要高</strong>；0% 表示过去一年最低，100% 表示过去一年最高。
                             </p>
                         </div>
 
@@ -451,7 +451,7 @@ html_content = r"""<!DOCTYPE html>
                             <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3 my-2 flex items-center justify-center flex-wrap gap-2 text-xs md:text-sm text-slate-100 font-sans">
                                 <span class="font-bold text-emerald-300">综合情绪指标 =</span>
                                 <div class="fraction-box">
-                                    <div class="fraction-numerator text-emerald-200">
+                                    <div class="fraction-numerator text-emerald-200" id="method-formula">
                                         换手率分位 + 行业集中度分位 + 上涨个股分位 + 融资买入分位
                                     </div>
                                     <div class="fraction-denominator">
@@ -517,7 +517,7 @@ html_content = r"""<!DOCTYPE html>
             <div class="overflow-x-auto rounded-xl border border-slate-200">
                 <table class="w-full text-left text-xs text-slate-600">
                     <thead class="bg-slate-50 text-slate-700 uppercase font-semibold border-b border-slate-200">
-                        <tr>
+                        <tr id="detail-head-row">
                             <th class="px-3 py-2.5">交易日期</th>
                             <th class="px-3 py-2.5">换手率 (%)</th>
                             <th class="px-3 py-2.5">换手率分位</th>
@@ -634,8 +634,8 @@ html_content = r"""<!DOCTYPE html>
 
     <footer class="bg-white border-t border-slate-200 py-6 mt-12 text-center text-xs text-slate-500">
         <div class="max-w-7xl mx-auto px-4">
-            <p>A股综合情绪指标研究与量化分析系统 · 自动归档至 GitHub docs</p>
-            <p class="mt-1">数据来源: Wind 万得全A (881001.WI) · 滚动 252 交易日历史分位数模型</p>
+            <p id="footer-system">A股综合情绪指标研究与量化分析系统 · 自动归档至 GitHub docs</p>
+            <p class="mt-1" id="footer-source">数据来源: Wind 万得全A (881001.WI) · 滚动 252 交易日历史分位数模型</p>
         </div>
     </footer>
 
@@ -662,7 +662,20 @@ html_content = r"""<!DOCTYPE html>
                     { label: '行业集中度',   hint: '前3行业',  raw: '前3行业占比(%)',    color: '#f59e0b' },
                     { label: '上涨个股占比', hint: '赚钱效应', raw: '上涨个股占比(%)',   color: '#10b981' },
                     { label: '融资买入占比', hint: '做多情绪', raw: '融资买入额占比(%)', color: '#ef4444' }
-                ]
+                ],
+                docTitle: 'A股综合情绪指标研报 | A-Share Market Sentiment Indicator',
+                footerSystem: 'A股综合情绪指标研究与量化分析系统 · 自动归档至 GitHub docs',
+                footerSource: '数据来源: Wind 万得全A (881001.WI) · 滚动 252 交易日历史分位数模型',
+                method: {
+                    intro: '基于 <strong>万得全A (881001.WI)</strong> 核心日频交易数据，从“交易活跃度、资金抱团集中度、赚钱效应广度、杠杆做多情绪”四个独立维度综合衡量市场水温：',
+                    formula: '换手率分位 + 行业集中度分位 + 上涨个股分位 + 融资买入分位',
+                    rows: [
+                        ['换手率', '当日全市场成交额 / 自由流通市值', '衡量交投活跃度与筹码换手意愿'],
+                        ['前3行业占比', '成交额最大的前3个行业合计 / 全市场成交额', '衡量主线资金抱团集中度与分化程度'],
+                        ['上涨个股占比', '当日上涨股票数量 / 全市场交易股票总数', '衡量市场广度与散户普遍赚钱效应'],
+                        ['融资买入占比', '两市融资买入总金额 / 全市场总成交额', '衡量高风险偏好杠杆资金的主动进攻情绪']
+                    ]
+                }
             },
             us: {
                 name: '美股',
@@ -676,7 +689,20 @@ html_content = r"""<!DOCTYPE html>
                     { label: '板块集中度',   hint: '前3板块',  raw: '前3板块占比(%)',    color: '#f59e0b' },
                     { label: '上涨个股占比', hint: '赚钱效应', raw: '上涨个股占比(%)',   color: '#10b981' },
                     { label: 'VIX (反向)',   hint: '恐慌情绪', raw: 'VIX',              color: '#ef4444' }
-                ]
+                ],
+                docTitle: '美股综合情绪指标研报 | US Market Sentiment Indicator',
+                footerSystem: '美股综合情绪指标研究与量化分析系统 · 自动归档至 GitHub docs',
+                footerSource: '数据来源: SPDR 板块 ETF + CBOE VIX (Yahoo Finance) · 滚动 252 交易日历史分位数模型',
+                method: {
+                    intro: '基于 <strong>11 只 SPDR 板块 ETF 与 CBOE VIX</strong> 的日频数据，从“交易活跃度、板块抱团集中度、赚钱效应广度、恐慌情绪”四个独立维度综合衡量市场水温：',
+                    formula: '成交额分位 + 板块集中度分位 + 上涨个股分位 + VIX反向分位',
+                    rows: [
+                        ['全市场成交额', '11 只 SPDR 板块 ETF 成交额合计 (十亿美元)', '衡量交投活跃度与资金参与度'],
+                        ['板块集中度', '成交额最大的前3个板块合计 / 板块成交额合计', '衡量主线资金抱团集中度与分化程度'],
+                        ['上涨个股占比', '当日收涨数量 / 标普100样本数 (大盘股口径)', '衡量市场广度与普遍赚钱效应'],
+                        ['VIX (反向)', 'CBOE 波动率指数收盘价，取分位后反向', 'VIX 越高越恐慌，故反向计入情绪']
+                    ]
+                }
             }
         };
 
@@ -1106,11 +1132,64 @@ html_content = r"""<!DOCTYPE html>
                 document.getElementById('hint-' + id).innerText = M.subs[i].hint;
             });
 
+            // 方法论、公式、页脚同样按市场切换 —— 否则美股 TAB 上会读到
+            // "基于万得全A"、"融资买入占比" 这些 A 股口径的说明
+            document.title = M.docTitle;
+            document.getElementById('footer-system').innerText = M.footerSystem;
+            document.getElementById('footer-source').innerText = M.footerSource;
+            document.getElementById('method-intro').innerHTML = M.method.intro;
+            document.getElementById('method-formula').innerText = M.method.formula;
+            // 明细表表头同样按市场重建, 否则美股 TAB 上仍是"换手率 (%)"、"融资买入占比 (%)"
+            const crt = document.getElementById('chart-raw-title');
+            if (crt) crt.innerText = '原始指标绝对值走势 (双Y轴: ' + M.axisLeft + ' vs ' + M.axisRight + ')';
+
+            const hr = document.getElementById('detail-head-row');
+            if (hr) {
+                const heads = ['交易日期'];
+                M.subs.forEach(sb => { heads.push(sb.raw); heads.push(sb.label + '分位'); });
+                heads.push('综合情绪指标');
+                hr.innerHTML = '';
+                heads.forEach((h, i) => {
+                    const th = document.createElement('th');
+                    th.className = (i === heads.length - 1)
+                        ? 'px-3 py-2.5 font-bold text-indigo-700 bg-indigo-50/50'
+                        : 'px-3 py-2.5';
+                    th.innerText = h;
+                    hr.appendChild(th);
+                });
+            }
+
+            const tb = document.getElementById('method-tbody');
+            const tone = ['text-blue-600', 'text-amber-600', 'text-emerald-600', 'text-rose-600'];
+            tb.innerHTML = '';
+            M.method.rows.forEach((r, i) => {
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-slate-50';
+                const cells = [String(i + 1), r[0], r[1], r[2]];
+                const cls = ['px-3 py-2.5 font-bold text-slate-900',
+                             'px-3 py-2.5 font-semibold ' + tone[i],
+                             'px-3 py-2.5', 'px-3 py-2.5'];
+                cells.forEach((text, j) => {
+                    const td = document.createElement('td');
+                    td.className = cls[j];
+                    td.innerText = text;
+                    tr.appendChild(td);
+                });
+                tb.appendChild(tr);
+            });
+
             // 无数据时显示空状态, 绝不填充占位数值
             const empty = rawData.length === 0;
             document.getElementById('empty-market-name').innerText = M.name;
             document.getElementById('market-empty').hidden = !empty;
-            document.querySelectorAll('main > section').forEach(sec => { sec.hidden = empty; });
+            // 只设 hidden 属性不够: Tailwind 的 display 工具类(如 .grid)优先级高于浏览器
+            // 默认的 [hidden]{display:none}。「四大微观情绪子指标」那节带 grid 类, 于是
+            // hidden 设了却照样显示, 在空状态的美股 TAB 上露出 A 股口径的方法论。
+            // 内联 style 压得住 class, 两个一起设。
+            document.querySelectorAll('main > section').forEach(sec => {
+                sec.hidden = empty;
+                sec.style.display = empty ? 'none' : '';
+            });
             if (empty) {
                 document.getElementById('badge-latest-date').innerText = '—';
                 return;

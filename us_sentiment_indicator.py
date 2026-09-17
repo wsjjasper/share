@@ -18,6 +18,15 @@ import pandas as pd
 
 from sentiment_core import rolling_percentile_rank, WINDOW
 
+# 确保控制台输出 UTF-8, 避免 Windows GBK 下打印 • 等字符直接抛 UnicodeEncodeError
+# (A 股的 auto_fetch_daily.py / update.py 都有这段, 这两个脚本原来漏了)
+if sys.platform.startswith('win'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(BASE_DIR, 'us_market_data.csv')
 OUT = os.path.join(BASE_DIR, 'us_sentiment_result.csv')

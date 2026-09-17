@@ -352,12 +352,50 @@ whole script. The US slot is now `US_DATA_JSON_SLOT`.
 `populateTable()` clears `tbody` before filling it; without that, every tab switch appended another
 15 rows.
 
+**`sec.hidden = true` is not enough to hide a section.** Tailwind's display utilities beat the UA
+stylesheet's `[hidden] { display: none }`, so the 「四大微观情绪子指标」section — the one carrying
+`class="grid ..."` — kept rendering on an empty US tab with the attribute set (`hidden` true,
+`display: grid`). The other six sections have no display class, which is why only that one leaked.
+`switchMarket` now sets `sec.style.display` as well; an inline style outranks the class.
+
+**Everything market-specific has to come from `MARKETS`, not the static markup.** Hiding a section
+only helps while a market is empty; once its data lands the section renders again, A-share wording
+and all. `MARKETS` therefore also carries `docTitle`, `footerSystem`, `footerSource` and a `method`
+block (intro prose, the composite formula, and the four sub-indicator table rows), and
+`switchMarket` rebuilds the 子指标 table, the 明细表 header row (from `subs[i].raw` and
+`subs[i].label`) and the raw-series chart title (from `axisLeft`/`axisRight`). The footer sits
+*outside* `main`, so it is never covered by the section hiding and has to be switched explicitly.
+Two sentences that named 换手率 in passing were reworded to be market-neutral instead of being
+duplicated per market. The check that matters: on the US tab, no visible text may mention 万得全A,
+881001, 换手率, 融资买入 or 行业.
+
 ### US pipeline
 
 `us_fetch_daily.py` → `us_market_data.csv` → `us_sentiment_indicator.py` → `us_sentiment_result.csv`.
-Needs `yfinance` on top of the A-share dependencies. **It is not wired into `update.py` or CI** — the
-fetcher has never run against the live endpoints, so hooking it into the daily job would risk the
-working A-share pipeline. Run it by hand, confirm the numbers, then wire it in.
+Needs `yfinance` on top of the A-share dependencies. **It is not wired into `update.py` or CI**, and
+CI does not install `yfinance`. Run the two scripts by hand when the US numbers should move.
+
+**Both CSVs are committed, and that is load-bearing.** `generate_html.py` injects `[]` when
+`us_sentiment_result.csv` is absent, and CI regenerates the page three times every trading day — so
+an uncommitted CSV means every CI run silently republishes the dashboard with an empty US tab, which
+is exactly what happened on the first attempt. The A-share data files are committed for the same
+reason. The US CSVs are not in `.gitignore`, so `update.py`'s `git add .` keeps them.
+
+First live run (2026-09-17) fetched 1005 trading days back to 2022-09-19 and produced 880 rows of
+output (the first 252 are consumed by the rolling window). Two fixes came out of it:
+
+- `close.pct_change()` defaulted to `fill_method='pad'`, which forward-fills a halted day to the
+  prior close: the stock then scores a 0% change, stays in the denominator and counts as *not*
+  advancing, biasing breadth down. It is now `pct_change(fill_method=None)` so halted days drop out
+  of numerator and denominator alike — the same rule `backfill_breadth_sina.py` follows. It also
+  silences a pandas deprecation that would eventually have become an error.
+- Neither US script had the Windows UTF-8 stdout guard the A-share scripts carry, so
+  `us_sentiment_indicator.py` wrote its CSV and *then* died with `UnicodeEncodeError` on the `•` in
+  its summary — exit code 1 with the data already on disk. Wiring that into `update.py`, which
+  aborts on a non-zero return, would have failed the whole run for a cosmetic print.
+
+`UNIVERSE` still lists `BK`, which Yahoo 404s. 101 of 102 resolve, well above `MIN_UNIVERSE` (60),
+so the run proceeds — but it is a stale ticker, not a transient error.
 
 The four dimensions, and why they differ from the A-share set:
 

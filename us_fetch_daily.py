@@ -31,6 +31,15 @@ import requests
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(BASE_DIR, 'us_market_data.csv')
 
+# 确保控制台输出 UTF-8, 避免 Windows GBK 下打印 • 等字符直接抛 UnicodeEncodeError
+# (A 股的 auto_fetch_daily.py / update.py 都有这段, 这两个脚本原来漏了)
+if sys.platform.startswith('win'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 FETCH_TIMEOUT = (10, 30)   # (连接, 读取) 秒
 MAX_RETRY = 3
 
@@ -154,7 +163,10 @@ def fetch_breadth(start, end):
         print("     [WARN] 缺少 Close 字段")
         return pd.DataFrame()
 
-    chg = close.pct_change()
+    # fill_method=None: 默认的 'pad' 会把停牌日前向填成前一日收盘,
+    # 涨跌幅变成 0 —— 该股仍计入分母却算作"没涨", 系统性压低宽度。
+    # 置 None 后停牌日得到 NaN, 下面 dropna 会把它从分子分母里一起排掉。
+    chg = close.pct_change(fill_method=None)
     rows = []
     for d, r in chg.iterrows():
         vals = r.dropna()
