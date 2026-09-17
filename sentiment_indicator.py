@@ -67,28 +67,12 @@ indicators = ['ind_换手率', 'ind_成交额前三行业占比', 'ind_上涨个
 window = 252
 
 
-def rolling_percentile_rank(series, window):
-    """
-    对每个时点, 计算当前值在过去window个交易日内的百分位排名 (0~100)
-    使用 pandas rolling + apply
-    """
-    def percentile_rank(arr):
-        """当前值(arr末尾)在窗口中的百分位"""
-        valid = arr[~np.isnan(arr)]
-        if len(valid) < window * 0.5:
-            return np.nan
-        current = arr[-1]
-        if np.isnan(current):
-            return np.nan
-        # 百分位 = (小于当前值的个数 + 0.5 * 等于当前值的个数) / 总个数 * 100
-        below = np.sum(valid < current)
-        equal = np.sum(valid == current)
-        rank = (below + 0.5 * equal) / len(valid) * 100
-        return rank
+# 分位数算法已抽到 sentiment_core, 与美股管线共用同一份实现
+from sentiment_core import rolling_percentile_rank as _rpr
 
-    return series.rolling(window=window, min_periods=int(window * 0.5)).apply(
-        percentile_rank, raw=True
-    )
+
+def rolling_percentile_rank(series, window):
+    return _rpr(series, window)
 
 
 print("正在计算滚动252日分位数...")

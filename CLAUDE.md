@@ -329,7 +329,52 @@ whose denominator grew two orders of magnitude, so a single correlation across a
 meaningless (Wind's own column scores 0.169 across 26 years but 0.72 within a year). Results are
 cached in `_sw_turnover_cache.tmp` (gitignored via `*.tmp`) so validate and `--apply` do not refetch;
 `--refetch` forces a re-pull.
+## The US market tab
 
+The dashboard carries two markets in one page. **There is only one set of DOM elements**: the tab
+switch swaps the underlying dataset and the labels, it does not duplicate the markup. The four
+sub-indicator keys are deliberately identical across markets (`turnover`, `top3_ind`, `rise_pct`,
+`margin_pct` and their `pct_*` twins), so `updateDashboard`, the table and the chart builders never
+branch on market — what a key *means* comes from the `MARKETS` config in the page, which supplies
+per-market titles, card labels, chart series names, axis names and the raw-value unit suffix
+(`%` for A-shares, none for the US since its values carry mixed units).
+
+`generate_html.py` injects two arrays into `const DATASETS`. The US one is read from
+`us_sentiment_result.csv` when that file exists and is `[]` otherwise, which makes the tab render an
+explicit "尚无数据" empty state — `switchMarket` hides every `main > section` and shows the
+placeholder. Nothing is ever filled with example or estimated numbers.
+
+**The two injection sentinels must not be substrings of one another.** The original pair was
+`DATA_JSON_PLACEHOLDER` and `US_DATA_JSON_PLACEHOLDER`; the first `str.replace` rewrote the tail of
+the second, leaving `us: US_[{…A-share data…}]` — wrong data *and* a ReferenceError that killed the
+whole script. The US slot is now `US_DATA_JSON_SLOT`.
+
+`populateTable()` clears `tbody` before filling it; without that, every tab switch appended another
+15 rows.
+
+### US pipeline
+
+`us_fetch_daily.py` → `us_market_data.csv` → `us_sentiment_indicator.py` → `us_sentiment_result.csv`.
+Needs `yfinance` on top of the A-share dependencies. **It is not wired into `update.py` or CI** — the
+fetcher has never run against the live endpoints, so hooking it into the daily job would risk the
+working A-share pipeline. Run it by hand, confirm the numbers, then wire it in.
+
+The four dimensions, and why they differ from the A-share set:
+
+| A-share | US | source |
+| --- | --- | --- |
+| 换手率 | total dollar volume (十亿美元) | the 11 SPDR sector ETFs, summed |
+| 成交额前三行业占比 | top-3 sector share (%) | same ETFs — one download feeds both, so they are self-consistent |
+| 上涨个股占比 | advancing share (%) | `UNIVERSE` in `us_fetch_daily.py`, an S&P 100 list — a **mega-cap** proxy, narrower than the A-share metric |
+| 融资买入额占比 | VIX | `^VIX`; FINRA margin debt is monthly, so there is no daily equivalent |
+
+**VIX enters inverted.** High VIX means fear means low sentiment, the opposite direction from the
+other three, so `us_sentiment_indicator.py` stores `100 - percentile(VIX)` in `pct_margin_pct` while
+`margin_pct` keeps the raw VIX for display. Anything comparing the two markets' composites has to
+account for that substitution — they are not the same index computed on different data.
+
+`sentiment_core.py` holds `rolling_percentile_rank`; both `sentiment_indicator.py` and
+`us_sentiment_indicator.py` import it so the percentile math cannot drift between markets.
 ## `_latest.xlsx` fallback trap
 
 Every Excel write is wrapped in a `PermissionError` handler (the author keeps the files open in
