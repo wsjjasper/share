@@ -152,24 +152,31 @@ requests layer holds.
 
 Three properties matter:
 
-- **It is NOT the same caliber as the Wind history.** This was assumed and is now measured false.
-  Over the 120-trading-day overlap (2026-03-04 ~ 2026-08-25), 申万 runs systematically high on both
-  derived columns, so its values must **not** be spliced into the pre-2026-08-26 rows:
+- **It is the same caliber as the Wind history — but only if you normalize per day.**
+  申万's `成交额占比` does **not** reliably sum to 100. Measured across 175 trading days: the
+  31 shares sum to **110–123** from 2025-12 through 2026-09-08, then switch to exactly **100**
+  from **2026-09-09** onward. The original code picked one `ratio_scale` for the whole fetch from
+  the median daily sum and divided everything by 100, so every pre-09-09 value came out ~18% too
+  high. Against Wind that looked like a caliber difference (+7.23pp bias) when it was just a wrong
+  denominator. `fetch_sw_daily_metrics` now computes `top3 / (that day's own sum)`, which is
+  immune to both the regime change and the decimal-vs-percent question:
 
-  | column | 申万 mean | Wind mean | bias | 申万/Wind | corr |
-  | --- | --- | --- | --- | --- | --- |
-  | 行业集中度 | 51.88% | 43.84% | +8.04pp | 1.19–1.23× | 0.9918 |
-  | 换手率 | 5.03% | 1.87% | +3.16pp | 2.57–2.81× | 0.8654 |
+  | 算法 | 申万 mean | Wind mean | bias | MAD | corr | gate |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | 全局 ÷100 (旧) | 49.08% | 41.85% | +7.23pp | 7.23 | 0.9948 | 未通过 |
+  | 按日归一 (现) | 42.27% | 41.85% | +0.42pp | **0.45** | **0.9981** | **通过** |
 
-  The correlations are high — it tracks the same signal — but the level is on a different basis
-  (申万's turnover rate is almost certainly free-float-denominated, and its `成交额占比` is
-  normalized within 申万 coverage rather than over the whole market). Because each sub-indicator is
-  a **rolling 252-day percentile of its own column**, a level shift is not a cosmetic offset: it
-  pegs the new days at the top of their own window. Measured on the 6 rows that reached production,
-  the industry percentile was inflated by **+35 to +61 points**; writing 申万 turnover unadjusted
-  produces a percentile of **99.8**. Reconstructing a Wind-caliber figure from 申万 absolutes does
-  not work either — `成交量 × 均价` overshoots Wind's market turnover by ~1.4× because `均价` is an
-  index-level mean price.
+  Rows written on/after 2026-09-09 are unaffected (their day sum was already 100), so the fix
+  changes no value that ever reached production. **Never reintroduce a global `÷100`.**
+
+- **The turnover rate derived from it is a different caliber from Wind's — deliberately.** 申万's
+  `流通市值` is a **free-float** figure, so the derived rate runs ~2.5x Wind's old column. That is
+  not a bug to be corrected: as of 2026-09-16 the whole 换手率 column from 2015-01-01 onward has
+  been **rebuilt** in this caliber by `rebuild_turnover_sw.py`, because Wind's original column
+  could not be reproduced from any free source (see that section). `SW_TURNOVER_ENABLED` is `True`
+  so the daily pipeline keeps writing the same caliber. Its unit is auto-detected: a median outside
+  0.001–20 is rejected, and a median below 0.2 is treated as a decimal and scaled by 100.
+
 - **It is queried by date range**, so each trading day gets its own figure. The previous Eastmoney
   `clist` endpoint returned only a current snapshot, and the fetch sat outside the date loop, so
   one value was written to every date appended in that run (2026-08-27 and 08-28 in the committed
@@ -204,10 +211,13 @@ older than the `SW_REPAIR_LOOKBACK_DAYS` window the daily pipeline covers. It im
 `fetch_sw_daily_metrics` from `auto_fetch_daily.py` rather than keeping its own copy, so both read
 the same source through the same code.
 
-It refuses to write unless **both** columns agree with the Wind history: per-column thresholds
-live in the `CHECKS` list at the top of the file (industry ≤ 3 percentage points mean absolute
-deviation, turnover rate ≤ 0.5, correlation ≥ 0.80 for both), and any column failing rejects the
-whole write. The comparison window covers only rows dated **before** `--start`: inside the
+Each column is gated **independently**: per-column thresholds live in the `CHECKS` list at the top
+of the file (industry ≤ 3 percentage points mean absolute deviation, turnover rate ≤ 0.5,
+correlation ≥ 0.80 for both). A column that passes is written; a column that fails is left
+untouched, and the run only aborts if *nothing* passes. It used to be all-or-nothing, which meant
+the permanently-failing turnover column blocked the industry backfill from ever landing. `validate()`
+returns a `{key: bool}` map; note `ok` is wrapped in `bool()` because `mad`/`corr` are numpy scalars
+and `np.True_ is True` is `False`, which silently broke the summary line. The comparison window covers only rows dated **before** `--start`: inside the
 backfill range the Excel holds either voided `NaN`s or the 1.48 turnover placeholder, and letting
 those into the window both breaks a legitimate check and could pass a bad one when a placeholder
 happens to sit near the real value. Run it with no flags to validate and preview; `--apply`
@@ -217,7 +227,55 @@ share.
 Run its validation before trusting the daily path: the pipeline's repair pass fills recent `NaN`
 industry cells automatically and has no validation gate of its own.
 
+As of 2026-09-16 the 16 rows 2026-08-26 ~ 2026-09-16 have had their industry column backfilled and
+validated (MAD 0.47pp, corr 0.9968). The turnover column in those same rows still holds the literal
+placeholder `1.48` — the caliber gate rejects 申万 for it, so the backfill skipped it. Careful:
+`1.48` also occurs legitimately in 45 rows back to 2002, so anything that voids the placeholder must
+select by **date range**, not by value. The 上涨个股占比 column in those rows likewise still holds
+the placeholder `0.585`, which no source can repair (see the breadth note above).
 
+
+
+## Rebuilding the turnover column: `rebuild_turnover_sw.py`
+
+A one-off script that overwrote column 2 for every row from 2015-01-01 on. It exists because
+**Wind's original 换手率 column cannot be reconstructed from any free source.** Measured over 51
+trading days against the exchanges' own published summaries (`stock_sse_deal_daily(date)` for 沪
+and `stock_szse_summary(date)` for 深, which publish 成交金额 and 流通市值 by date):
+
+| pair | corr |
+| --- | --- |
+| Wind 成交额 vs exchange 成交额 | **1.0000** |
+| exchange 换手率 vs exchange 成交额 | 0.9876 |
+| Wind 换手率 vs exchange 换手率 | 0.6770 |
+| Wind 换手率 vs **Wind's own 成交额** | **0.6810** |
+
+The 成交额 columns agree perfectly, so the disagreement is entirely in the denominator — and Wind's
+implied denominator moves a median of **4.05% per day** where the real float market cap moves 1.26%.
+The column carries ~12% idiosyncratic variation relative to any real turnover rate, so no
+`成交额 ÷ 市值` construction reproduces it. Do not spend time looking again; 乐咕
+(`stock_a_congestion_lg` is 拥挤度 with NaN recent values, `stock_market_activity_legu` is broken)
+and 申万市场表征 were checked too.
+
+The way out is that the composite consumes **percentile ranks within each column's own rolling
+252-day window**, so a column only needs to be self-consistent — it does not need to match Wind.
+The rebuilt series is a genuine turnover rate: per-year correlation with 成交额 of 0.9327 (worst
+year 0.8232) versus 0.7166 for the column it replaced.
+
+Range matters: this endpoint returns **nothing usable before 2014** (rows exist but carry fewer
+than `SW_MIN_INDUSTRIES`), 87% of 2014, and 98.8–100% from 2015. A full-history run therefore fails
+its own coverage gate at 47% — use `--start 2015-01-01`, which scores 99.40%. The splice at
+2015-01-01 is harmless because the earliest output (2024-09-24) looks back only 252 rows, to
+2023-09-08. Gap days are written as `NaN` rather than left at the old caliber: a mixed-caliber
+column is worse than a missing cell.
+
+Its gate is self-consistency, not agreement with Wind: coverage ≥ 95%, every value within
+0.2–20%, per-year correlation with 成交额 ≥ 0.85, and implied-denominator median daily move ≤ 3%.
+**Correlation must be computed per year and then medianed** — 成交额 is a level and 换手率 a ratio
+whose denominator grew two orders of magnitude, so a single correlation across all history is
+meaningless (Wind's own column scores 0.169 across 26 years but 0.72 within a year). Results are
+cached in `_sw_turnover_cache.tmp` (gitignored via `*.tmp`) so validate and `--apply` do not refetch;
+`--refetch` forces a re-pull.
 
 ## `_latest.xlsx` fallback trap
 

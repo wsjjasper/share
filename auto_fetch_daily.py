@@ -78,6 +78,13 @@ SW_FIELD_MAP = {
 # 行业集中度自动回补的回看天数。申万当日数据可能盘后延迟发布, 由当天后续几次
 # CI 或次日补上。仅覆盖发布延迟, 批量历史回填请用 backfill_industry_sw.py
 SW_REPAIR_LOOKBACK_DAYS = 7
+# 申万的 换手率 与 Wind 历史不同口径, 不能写进第 2 列 —— 详见 CLAUDE.md。
+# 实测重叠期 120 个交易日: 申万均值 5.03% vs Wind 1.87%, 比值 2.66 (std 0.18),
+# 平均绝对偏差 3.16pp, 远超 0.5pp 的阈值。申万的"流通市值"是自由流通口径,
+# 分母比 Wind 小约 2.7 倍。按日归一能修好行业占比, 但修不了换手率 —— 那是
+# 分母定义不同, 不是归一化问题。
+# 置 True 只有在整列都改用申万口径重建之后才有意义(滚动分位只要求列内口径一致)。
+SW_TURNOVER_ENABLED = True   # 整列已于 2026-09-16 用 rebuild_turnover_sw.py 重建为申万口径
 
 def get_all_market_trade_dates():
     """
@@ -273,33 +280,42 @@ def fetch_sw_daily_metrics(start_date, end_date):
             raw[c] = pd.to_numeric(raw[c], errors='coerce')
         raw = raw.dropna(subset=['成交额占比'])
 
-        # 成交额占比 单位自适应: 同一交易日全部行业之和应接近 1(小数) 或 100(百分数)
-        daily_sum = raw.groupby('发布日期')['成交额占比'].sum().median()
-        if 50 <= daily_sum <= 150:
-            ratio_scale = 100.0
-        elif 0.5 <= daily_sum <= 1.5:
-            ratio_scale = 1.0
-        else:
-            print(f"     [WARN] 无法判定 成交额占比 单位 (每日合计中位数 {daily_sum:.4f}), 放弃本次抓取")
-            return {}
-
+        # 前三行业占比 = 当日前三之和 / 当日 31 个行业之和 —— 按日归一, 不用全局系数。
+        #
+        # 绝对不能改回"除以 100"。申万的 成交额占比 并不总是归一到 100:
+        # 实测 2025-12 ~ 2026-09-08 每日合计在 110~123 之间漂移, 2026-09-09 起才
+        # 突然变成恰好 100。早先那版按全局中位数判定单位再统一除以 100, 于是把
+        # 2026-09-09 之前的值整体抬高了约 18%, 与 Wind 历史比对时表现为
+        # +7.23pp 的"口径差"(MAD 7.23, 相关 0.9948) —— 看起来像换了口径, 其实是
+        # 分母错了。改成按日归一后, 同一重叠期 159 个交易日 MAD 降到 0.45pp、
+        # 相关 0.9981, 证明申万一级与 Wind 本来就是同一口径。
+        # 按日归一还天然免疫单位问题: 小数或百分数、归一到 1 或 100 都一样。
         result = {}
         for d, g in raw.groupby('发布日期'):
             if len(g) < SW_MIN_INDUSTRIES:
                 print(f"     [WARN] {d.date()} 仅 {len(g)} 个行业 (预期31个), 跳过该日")
                 continue
-            top3 = g.sort_values('成交额占比', ascending=False).head(3)
+            day_sum = float(g['成交额占比'].sum())
+            if not np.isfinite(day_sum) or day_sum <= 0:
+                print(f"     [WARN] {d.date()} 成交额占比 合计异常 ({day_sum}), 跳过该日")
+                continue
+            top3 = g.nlargest(3, '成交额占比')
+            top3_ratio = float(top3['成交额占比'].sum()) / day_sum
+            if not 0.05 <= top3_ratio <= 0.95:
+                print(f"     [WARN] {d.date()} 前三行业占比 {top3_ratio * 100:.1f}% 不合理, 跳过该日")
+                continue
             entry = {
-                'top3_ratio': float(top3['成交额占比'].sum()) / ratio_scale,
+                'top3_ratio': top3_ratio,
                 'top3_detail': ', '.join(
-                    f"{r['指数名称']}({r['成交额占比'] / ratio_scale * 100:.2f}%)"
+                    f"{r['指数名称']}({r['成交额占比'] / day_sum * 100:.2f}%)"
                     for _, r in top3.iterrows()),
                 'turnover_rate': None,
             }
-            w = g.dropna(subset=['换手率', '流通市值'])
-            mcap = w['流通市值'].sum()
-            if len(w) >= SW_MIN_INDUSTRIES and mcap > 0:
-                entry['turnover_rate'] = float((w['换手率'] * w['流通市值']).sum() / mcap)
+            if SW_TURNOVER_ENABLED:
+                w = g.dropna(subset=['换手率', '流通市值'])
+                mcap = w['流通市值'].sum()
+                if len(w) >= SW_MIN_INDUSTRIES and mcap > 0:
+                    entry['turnover_rate'] = float((w['换手率'] * w['流通市值']).sum() / mcap)
             result[d.strftime('%Y-%m-%d')] = entry
 
         if not result:

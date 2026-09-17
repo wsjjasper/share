@@ -59,7 +59,7 @@ def validate(sw, df, n_days, before):
     """
     d = pd.to_datetime(df.iloc[:, COL_DATE]).dt.normalize()
     before = pd.Timestamp(before)
-    all_ok = True
+    passed = {}
 
     for chk in CHECKS:
         rows = []
@@ -79,7 +79,7 @@ def validate(sw, df, n_days, before):
         print(f"\n口径校验 · {chk['name']}")
         if len(m) < 20:
             print(f"  [失败] 可比对的交易日仅 {len(m)} 个, 不足以校验")
-            all_ok = False
+            passed[chk['key']] = False
             continue
 
         diff = m['sw'] - m['wind']
@@ -91,12 +91,16 @@ def validate(sw, df, n_days, before):
         print(f"  平均绝对偏差   : {mad:.2f} 个百分点   (阈值 <= {chk['max_mad']})")
         print(f"  最大绝对偏差   : {diff.abs().max():.2f} 个百分点")
         print(f"  相关系数       : {corr:.4f}   (阈值 >= {chk['min_corr']})")
-        ok = (mad <= chk['max_mad']) and (corr >= chk['min_corr'])
+        # bool(): mad/corr 是 numpy 标量, 比较结果 np.bool_ 与 `is True` 不相等
+        ok = bool((mad <= chk['max_mad']) and (corr >= chk['min_corr']))
         print(f"  结论: {'通过' if ok else '未通过'}")
-        all_ok = all_ok and ok
+        passed[chk['key']] = ok
 
-    print(f"\n总体: {'全部通过 —— 可安全回填' if all_ok else '存在未通过项 —— 拒绝写入'}")
-    return all_ok
+    names = lambda v: ', '.join(c['name'] for c in CHECKS if passed.get(c['key']) is v) or '无'
+    print("")
+    print(f"总体: 通过 = {names(True)};  未通过 = {names(False)}")
+    print("      按列独立放行 —— 只写入通过的列, 未通过的列保持原样不动。")
+    return passed
 
 
 def main():
@@ -118,7 +122,7 @@ def main():
                    - pd.Timedelta(days=args.validate_days * 2)).strftime('%Y-%m-%d')
     sw = fetch_sw(fetch_start, args.end)
 
-    ok = validate(sw, df, args.validate_days, args.start)
+    passed = validate(sw, df, args.validate_days, args.start)
 
     target = df.index[(d >= args.start) & (d <= args.end)]
     print(f"\n待回填区间 {args.start} ~ {args.end}: Excel 内 {len(target)} 行")
@@ -135,7 +139,7 @@ def main():
     if not args.apply:
         print("\n[未写入] 这是校验模式。确认无误后加 --apply 执行写入。")
         return
-    if not ok:
+    if not any(passed.values()):
         print("\n[拒绝写入] 口径校验未通过。")
         sys.exit(2)
 
@@ -145,16 +149,20 @@ def main():
         if key not in sw:
             continue
         e = sw[key]
-        df.iat[i, COL_RATIO] = e['top3_ratio']
-        total_amt = df.iat[i, COL_TOTAL_AMT]
-        df.iat[i, COL_TOP3_AMT] = (e['top3_ratio'] * total_amt) if pd.notna(total_amt) else np.nan
-        n_ratio += 1
-        if e['turnover_rate'] is not None:
+        if passed.get('top3_ratio'):
+            df.iat[i, COL_RATIO] = e['top3_ratio']
+            total_amt = df.iat[i, COL_TOTAL_AMT]
+            df.iat[i, COL_TOP3_AMT] = (e['top3_ratio'] * total_amt) if pd.notna(total_amt) else np.nan
+            n_ratio += 1
+        if passed.get('turnover_rate') and e['turnover_rate'] is not None:
             df.iat[i, COL_TURNOVER] = e['turnover_rate']
             n_tr += 1
 
     df.to_excel(EXCEL_PATH, index=False)
     print(f"\n[OK] 已回填 行业集中度 {n_ratio} 行 / 换手率 {n_tr} 行, 写入 {EXCEL_PATH}")
+    for c in CHECKS:
+        if not passed.get(c['key']):
+            print(f"     [跳过] {c['name']}: 口径校验未通过, 该列未改动")
     print("     接着运行 python update.py 重算分位数并发布。")
 
 
