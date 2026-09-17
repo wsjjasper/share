@@ -29,6 +29,10 @@ python generate_html.py        # index.html AND docs/index.html
 python backfill_industry_sw.py   # 行业集中度 (col 3/7) — 申万, seconds
 python backfill_breadth_sina.py  # 上涨个股占比 (col 4/8/9/11) — 逐只日线, ~26 min
 python rebuild_turnover_sw.py    # 换手率 (col 2) — 整列重建, --start 2015-01-01
+
+# Signal validation — does the indicator actually predict anything? Read-only.
+python validate_signal.py                 # both markets
+python validate_signal.py --market cn --horizons 5,20
 ```
 
 Dependencies (matching CI): `pip install pandas numpy akshare requests matplotlib openpyxl`.
@@ -644,6 +648,46 @@ account for that substitution — they are not the same index computed on differ
 
 `sentiment_core.py` holds `rolling_percentile_rank`; both `sentiment_indicator.py` and
 `us_sentiment_indicator.py` import it so the percentile math cannot drift between markets.
+## Signal validation: `validate_signal.py`
+
+The repo gates **data caliber** hard (every backfill script refuses to write unless it matches Wind
+within a threshold). This script applies the same discipline one level up: after changing a
+sub-indicator, a source or a weighting, it answers whether the composite carries any forward
+information. It is read-only and needs no new dependencies — Spearman plus a normal approximation,
+no scipy.
+
+What it measures, and what the current numbers are (A-shares over 2586 sessions, 2016-01-04 ~
+2026-08-25, against 上证综指; the composite is recomputed over full history because the published
+result file only starts 2024-09-24 and 482 sessions is far too few):
+
+1. **IC against forward 5/20/60-day returns.** −0.020 (p=0.31), −0.016 (p=0.41), −0.163 (p=1.8e-16).
+2. **Non-overlapping significance — the check that matters.** Overlapping windows make naive p-values
+   meaningless: that 60-day p of 1.8e-16 looks decisive, but splitting the sample into 60
+   non-overlapping subsamples leaves only **12% of them significant**, which is roughly chance. A
+   real signal would show up in most subsamples. The verdict only reports a signal when the naive
+   test passes *and* at least half the non-overlapping subsamples agree.
+3. **Bucket monotonicity.** A "high = be careful" indicator should show forward returns falling as
+   the reading rises. A-shares do the opposite: the >80 bucket averaged **+0.55%** over the next 20
+   days against a **+0.31%** full-sample mean, and <20 came in at exactly the baseline. Rank
+   correlation across buckets is **+0.30** where the threshold semantics need it strongly negative.
+   `MIN_BUCKET_N` (30) suppresses the monotonicity verdict when any bucket is thin — without it the
+   US sample, whose <20 bucket holds 14 days inside a 3.5-year bull run, scores a perfect −1.000 and
+   the tool would have announced the thresholds were valid.
+4. **Coincidence with the same day's return.** This is the finding that explains the rest: the
+   composite scores **0.42** against the current session's move, and 上涨个股占比 alone scores
+   **0.80**. One of the four sub-indicators is very nearly a restatement of "did the market go up
+   today", which is why the composite describes rather than predicts.
+
+Per sub-indicator against forward 20-day returns, only 换手率 reaches p=0.045, which fails the
+Bonferroni threshold of 0.0125 for four tests. The US side is worse conditioned still: 878 sessions
+means 13 independent observations at a 60-day horizon.
+
+**Conclusion carried by the dashboard: this is a coincident, descriptive indicator with no
+demonstrated timing value.** Anyone proposing to change a sub-indicator should run this first and
+compare, rather than reasoning from whether the new series "looks better". Obvious research
+directions — valuation percentiles, margin *changes* rather than levels, VIX term structure — all
+have to clear the same bar.
+
 ## `_latest.xlsx` fallback trap
 
 Every Excel write is wrapped in a `PermissionError` handler (the author keeps the files open in
@@ -666,5 +710,14 @@ positionally in `generate_html.py`, which is a third place where column order is
 
 ## Thresholds
 
-`> 80` overheated (过热), `20–80` neutral (中性), `< 20` oversold (过冷). These appear in the
-matplotlib chart, the HTML dashboard and `update.py`'s console summary — change all three together.
+`> 80` 历史高位, `20–80` 中性, `< 20` 历史低位. These strings live in **five** places — the
+matplotlib chart (`sentiment_indicator.py`), the HTML dashboard (`generate_html.py`, in three spots:
+the regime cards, the composite badge and the per-card status labels), `update.py`'s console summary,
+`us_sentiment_indicator.py`'s summary, and `setup_docs.py`'s inline README text. Change them together.
+
+**The wording is deliberately descriptive, not directional.** It used to read 过热 / 过冷 with regime
+cards saying 警惕短线见顶回撤 and 往往孕育底部反弹, and the per-card labels said 高位亢奋 / 低位极冷.
+That is trading advice, and `validate_signal.py` shows the data contradicts it — the >80 bucket
+delivered the *highest* forward 20-day return. The page now carries an explicit note that this is a
+coincident indicator and not investment advice. Do not reintroduce directional language without
+evidence from the validator.

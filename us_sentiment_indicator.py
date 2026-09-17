@@ -91,7 +91,7 @@ def main():
 
     print(f"\n[OK] 写入 {OUT}: {len(out)} 个交易日 ({out['date'].iloc[0]} ~ {out['date'].iloc[-1]})")
     last = out.iloc[-1]
-    status = '过热' if last['composite_sentiment'] > 80 else ('过冷' if last['composite_sentiment'] < 20 else '中性')
+    status = '历史高位' if last['composite_sentiment'] > 80 else ('历史低位' if last['composite_sentiment'] < 20 else '中性')
     print(f"\n最新读数 {last['date']}: 综合情绪 {last['composite_sentiment']:.2f} ({status})")
     fmt = lambda v: '—' if pd.isna(v) else f"{v:.2f}"
     print(f"  • 成交额分位:   {fmt(last['pct_turnover'])}%  (绝对值 {fmt(last['turnover'])} 十亿美元)")

@@ -127,7 +127,7 @@ def main():
     
     date_str = str(latest_row['date'])[:10]
     comp_val = latest_row['composite']
-    status_text = "过热" if comp_val > 80 else ("过冷" if comp_val < 20 else "中性")
+    status_text = "历史高位" if comp_val > 80 else ("历史低位" if comp_val < 20 else "中性")
     
     print(f"交易日期: {date_str}")
     print(f"综合情绪指标: {comp_val:.2f} ({status_text})")

@@ -67,28 +67,12 @@ indicators = ['ind_换手率', 'ind_成交额前三行业占比', 'ind_上涨个
 window = 252
 
 
-def rolling_percentile_rank(series, window):
-    """
-    对每个时点, 计算当前值在过去window个交易日内的百分位排名 (0~100)
-    使用 pandas rolling + apply
-    """
-    def percentile_rank(arr):
-        """当前值(arr末尾)在窗口中的百分位"""
-        valid = arr[~np.isnan(arr)]
-        if len(valid) < window * 0.5:
-            return np.nan
-        current = arr[-1]
-        if np.isnan(current):
-            return np.nan
-        # 百分位 = (小于当前值的个数 + 0.5 * 等于当前值的个数) / 总个数 * 100
-        below = np.sum(valid < current)
-        equal = np.sum(valid == current)
-        rank = (below + 0.5 * equal) / len(valid) * 100
-        return rank
+# 分位数算法已抽到 sentiment_core, 与美股管线共用同一份实现
+from sentiment_core import rolling_percentile_rank as _rpr
 
-    return series.rolling(window=window, min_periods=int(window * 0.5)).apply(
-        percentile_rank, raw=True
-    )
+
+def rolling_percentile_rank(series, window):
+    return _rpr(series, window)
 
 
 print("正在计算滚动252日分位数...")
@@ -163,8 +147,8 @@ ax1.plot(dates, output['换手率_分位'], label='换手率分位', linewidth=1
 ax1.plot(dates, output['成交额前三行业占比_分位'], label='成交额前三行业占比分位', linewidth=1.2, alpha=0.8)
 ax1.plot(dates, output['上涨个股占比_分位'], label='上涨个股占比分位', linewidth=1.2, alpha=0.8)
 ax1.plot(dates, output['融资买入额占比_分位'], label='融资买入额占比分位', linewidth=1.2, alpha=0.8)
-ax1.axhline(y=80, color='red', linestyle='--', alpha=0.5, label='过热阈值(80)')
-ax1.axhline(y=20, color='green', linestyle='--', alpha=0.5, label='过冷阈值(20)')
+ax1.axhline(y=80, color='red', linestyle='--', alpha=0.5, label='高位阈值(80)')
+ax1.axhline(y=20, color='green', linestyle='--', alpha=0.5, label='低位阈值(20)')
 ax1.set_ylabel('分位数 (%)')
 ax1.set_title('4个子指标 - 滚动252日分位数')
 ax1.legend(loc='upper left', fontsize=8)
@@ -175,9 +159,9 @@ ax1.grid(True, alpha=0.3)
 ax2 = axes[1]
 ax2.fill_between(dates, output['综合情绪指标'], alpha=0.3, color='steelblue')
 ax2.plot(dates, output['综合情绪指标'], color='steelblue', linewidth=2, label='综合情绪指标')
-ax2.axhline(y=80, color='red', linestyle='--', alpha=0.5, label='过热(80)')
+ax2.axhline(y=80, color='red', linestyle='--', alpha=0.5, label='高位(80)')
 ax2.axhline(y=50, color='gray', linestyle='--', alpha=0.3, label='中位(50)')
-ax2.axhline(y=20, color='green', linestyle='--', alpha=0.5, label='过冷(20)')
+ax2.axhline(y=20, color='green', linestyle='--', alpha=0.5, label='低位(20)')
 ax2.set_ylabel('综合情绪指标 (%)')
 ax2.set_title('综合情绪指标 (4个子指标等权平均)')
 ax2.legend(loc='upper left', fontsize=8)
