@@ -375,6 +375,13 @@ duplicated per market. The check that matters: on the US tab, no visible text ma
 Needs `yfinance` on top of the A-share dependencies. **It is not wired into `update.py` or CI**, and
 CI does not install `yfinance`. Run the two scripts by hand when the US numbers should move.
 
+**The US stages now run in `update.py`, deliberately without a return-code check.** A-shares are the
+main line; the US tab is an addition riding on Yahoo, and one network blip there must not fail the
+whole daily run. On failure the step warns, skips the second script and continues — `generate_html.py`
+then republishes the page from the committed CSV, i.e. the previous day's US numbers. CI installs
+`yfinance` alongside the A-share dependencies, and `us_sentiment_result.csv` is in the `docs/` sync
+list because the page's download button links to it.
+
 **Both CSVs are committed, and that is load-bearing.** `generate_html.py` injects `[]` when
 `us_sentiment_result.csv` is absent, and CI regenerates the page three times every trading day — so
 an uncommitted CSV means every CI run silently republishes the dashboard with an empty US tab, which
@@ -396,6 +403,41 @@ output (the first 252 are consumed by the rolling window). Two fixes came out of
 
 `UNIVERSE` still lists `BK`, which Yahoo 404s. 101 of 102 resolve, well above `MIN_UNIVERSE` (60),
 so the run proceeds — but it is a stale ticker, not a transient error.
+
+**Holiday rows, and why `MIN_SUBS` exists.** On US market holidays yfinance still returns a `^VIX`
+row while the sector ETFs and the constituent list return nothing, so the outer merge invents a row
+carrying VIX alone. `out[pct_cols].mean(axis=1)` skips NaN, so that row produced a "composite" that
+was really just the VIX percentile wearing a four-indicator label — 2026-05-25 (Memorial Day) scored
+64.48 and 2026-09-07 (Labor Day) 85.91 that way. `us_sentiment_indicator.py` now requires
+`MIN_SUBS` (3) of the four percentiles before it will emit a composite, and prints the dates it
+drops. 3 rather than 4 matches A-shares, where margin data legitimately does not exist before
+2010-03-31. Output went 880 → 878 rows. Note both dates *are* valid A-share sessions, so they
+still appear in the `cn` dataset — finding a date in the page is not evidence it survived here.
+
+**⚠ 板块集中度 is the weakest of the four and is knowingly shipped as-is.** It is the top-3 share of
+just 11 SPDR ETFs, which bounds it from below at 3/11 = 27.3% and squeezes the whole 879-day history
+into 35.5–60.1% with a standard deviation of 3.47pp. Feed a distribution that tight into a rolling
+percentile and the percentile amplifies noise: a 10pp move in the raw value sweeps the entire
+historical range, so 2026-09-15 → 09-16 went 42.89% → 53.29% and the percentile went 14.6 → 96.2.
+101 of 879 days move the percentile by more than 50 points. Compare the coefficient of variation
+(std ÷ mean) across the four:
+
+| sub-indicator | CV | median daily percentile move | days moving >50 |
+| --- | --- | --- | --- |
+| 板块集中度 | **0.076** | 18.7 | 101 |
+| 成交额 | 0.355 | 14.3 | 42 |
+| 上涨占比 | 0.388 | 26.4 | 179 |
+| VIX | 0.243 | 5.0 | 1 |
+
+上涨占比 also jumps often, but that is genuine — breadth really does swing from 8% to 94%, exactly as
+it does for A-shares. 板块集中度 is different: the series barely moves, so roughly a quarter of the US
+composite is close to noise. The A-share analogue avoids this by partitioning the market into 31
+申万一级 industries (floor 3/31 = 9.7%, observed 25–52%). Two further caveats on the same block of
+data: ETF trading volume reflects institutional hedging and creation/redemption flows rather than
+how actively a sector's underlying stocks trade, and the 11 ETFs sum to a median of 10.9 十亿美元
+against a real US tape of roughly 400–600 十亿, so the card labelled 「全市场成交额」 is measuring
+about 2% of the market. The fix, when someone wants it, is to aggregate the already-downloaded
+`UNIVERSE` constituents' dollar volume by GICS sector instead of using ETF volume.
 
 The four dimensions, and why they differ from the A-share set:
 

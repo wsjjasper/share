@@ -68,6 +68,22 @@ def main():
     if os.path.exists(src_chart):
         shutil.copy2(src_chart, dst_chart)
 
+    # 4.5 美股管线 —— 故意不检查返回码。
+    # 美股是看板上的附加市场, A 股才是这条管线的主线; 美股抓取依赖 Yahoo,
+    # 一次网络抖动不该让整轮 A 股更新失败。失败时 us_sentiment_result.csv
+    # 保持上一次的内容(它已入库), generate_html.py 照常用旧数据出页面。
+    print_step("步骤 3.5: 美股数据抓取与指标计算 (失败不中断)")
+    for script in ("us_fetch_daily.py", "us_sentiment_indicator.py"):
+        res_us = subprocess.run([sys.executable, script], capture_output=True,
+                                text=True, encoding='utf-8', errors='ignore')
+        if res_us.returncode == 0:
+            print(res_us.stdout)
+        else:
+            print(f"[警告] {script} 失败 (返回码 {res_us.returncode}), 美股沿用上次数据")
+            if res_us.stderr:
+                print(res_us.stderr[-800:])
+            break
+
     # 5. 生成交互式网页 index.html
     print_step("步骤 4: 重新生成交互式研报网页 (index.html)")
     res_html = subprocess.run([sys.executable, "generate_html.py"], capture_output=True, text=True, encoding='utf-8', errors='ignore')
@@ -88,6 +104,7 @@ def main():
         '情绪指标_结果.xlsx',
         '情绪指标_图表.png',
         '副本万得全A.xlsx',
+        'us_sentiment_result.csv',
         'update.py',
         '一键更新.bat'
     ]

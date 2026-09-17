@@ -36,6 +36,13 @@ OUT_COLS = ['date', 'turnover', 'top3_ind', 'rise_pct', 'margin_pct',
             'pct_turnover', 'pct_top3_ind', 'pct_rise_pct', 'pct_margin_pct',
             'composite_sentiment']
 
+# 合成综合值所需的最少子指标个数。
+# 美股休市日 (如阵亡将士纪念日、劳动节) yfinance 仍会给出 VIX 行, 而板块 ETF 与
+# 成分股都没有数据, outer merge 于是造出只有 VIX 一项的行; 那样算出来的"综合值"
+# 其实就是 VIX 单项分位冒充四指标合成。要求至少 3 项才出值, 把这类行挡掉。
+# (取 3 而非 4 是与 A 股一致: A 股 2010-03-31 前没有两融, 合法地只有 3 项。)
+MIN_SUBS = 3
+
 
 def main():
     if not os.path.exists(SRC):
@@ -64,7 +71,14 @@ def main():
     print("  VIX 已反向取分位 (100 - 原始分位)")
 
     pct_cols = ['pct_turnover', 'pct_top3_ind', 'pct_rise_pct', 'pct_margin_pct']
+    n_subs = out[pct_cols].notna().sum(axis=1)
     out['composite_sentiment'] = out[pct_cols].mean(axis=1)   # 缺失项跳过, 与 A 股一致
+    out.loc[n_subs < MIN_SUBS, 'composite_sentiment'] = np.nan
+
+    dropped = out.loc[(n_subs > 0) & (n_subs < MIN_SUBS), 'date']
+    if len(dropped):
+        print(f"  剔除子指标不足 {MIN_SUBS} 项的交易日 {len(dropped)} 个 (多为美股休市日): "
+              + ', '.join(d.strftime('%Y-%m-%d') for d in dropped))
 
     out = out[out['composite_sentiment'].notna()].copy()
     if out.empty:

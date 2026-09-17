@@ -495,7 +495,7 @@ html_content = r"""<!DOCTYPE html>
             </h2>
             <p class="text-xs text-slate-500 mb-4">由 Python 自动化任务生成的高清图表输出，展示 2024 年 9 月 24 日至今历史全貌：</p>
             <div class="rounded-xl overflow-hidden border border-slate-200 shadow-inner bg-slate-900 flex items-center justify-center p-2">
-                <img src="sentiment_chart.png" alt="A股综合情绪指标走势图" class="w-full h-auto rounded-lg shadow">
+                <img id="static-chart-img" src="sentiment_chart.png" alt="综合情绪指标走势图" class="w-full h-auto rounded-lg shadow">
             </div>
         </section>
 
@@ -506,11 +506,11 @@ html_content = r"""<!DOCTYPE html>
                     <h2 class="text-lg font-bold text-slate-900">近15个交易日详细数据明细</h2>
                     <p class="text-xs text-slate-500">💡 提示：<strong>点击表格中任意一行</strong>，上方看板将直接载入并显示该日读数！</p>
                 </div>
-                <a href="情绪指标_结果.xlsx" download class="inline-flex items-center px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 font-medium text-xs border border-indigo-200 transition-colors">
+                <a id="btn-download" href="情绪指标_结果.xlsx" download class="inline-flex items-center px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 font-medium text-xs border border-indigo-200 transition-colors">
                     <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
                     </svg>
-                    下载完整 Excel 结果 (464天)
+                    <span id="btn-download-text">下载完整 Excel 结果</span>
                 </a>
             </div>
 
@@ -664,6 +664,9 @@ html_content = r"""<!DOCTYPE html>
                     { label: '融资买入占比', hint: '做多情绪', raw: '融资买入额占比(%)', color: '#ef4444' }
                 ],
                 docTitle: 'A股综合情绪指标研报 | A-Share Market Sentiment Indicator',
+                resultFile: '情绪指标_结果.xlsx',
+                resultLabel: '完整 Excel 结果',
+                staticChart: 'sentiment_chart.png',
                 footerSystem: 'A股综合情绪指标研究与量化分析系统 · 自动归档至 GitHub docs',
                 footerSource: '数据来源: Wind 万得全A (881001.WI) · 滚动 252 交易日历史分位数模型',
                 method: {
@@ -691,6 +694,10 @@ html_content = r"""<!DOCTYPE html>
                     { label: 'VIX (反向)',   hint: '恐慌情绪', raw: 'VIX',              color: '#ef4444' }
                 ],
                 docTitle: '美股综合情绪指标研报 | US Market Sentiment Indicator',
+                resultFile: 'us_sentiment_result.csv',
+                resultLabel: '完整 CSV 结果',
+                staticChart: null,   // 美股没有 matplotlib 静态图, 整节隐藏
+
                 footerSystem: '美股综合情绪指标研究与量化分析系统 · 自动归档至 GitHub docs',
                 footerSource: '数据来源: SPDR 板块 ETF + CBOE VIX (Yahoo Finance) · 滚动 252 交易日历史分位数模型',
                 method: {
@@ -1140,6 +1147,14 @@ html_content = r"""<!DOCTYPE html>
             document.getElementById('method-intro').innerHTML = M.method.intro;
             document.getElementById('method-formula').innerText = M.method.formula;
             // 明细表表头同样按市场重建, 否则美股 TAB 上仍是"换手率 (%)"、"融资买入占比 (%)"
+            // 下载按钮与静态图存档也是按市场的: 否则美股 TAB 上会下到 A 股的 Excel、
+            // 看到 A 股的 matplotlib 图。天数从数据本身来, 不再写死。
+            const dl = document.getElementById('btn-download');
+            if (dl) {
+                dl.href = M.resultFile;
+                document.getElementById('btn-download-text').innerText =
+                    '下载' + M.resultLabel + ' (' + rawData.length + '天)';
+            }
             const crt = document.getElementById('chart-raw-title');
             if (crt) crt.innerText = '原始指标绝对值走势 (双Y轴: ' + M.axisLeft + ' vs ' + M.axisRight + ')';
 
@@ -1193,6 +1208,15 @@ html_content = r"""<!DOCTYPE html>
             if (empty) {
                 document.getElementById('badge-latest-date').innerText = '—';
                 return;
+            }
+
+            // 必须放在上面那个 section 显示循环之后 —— 循环会把所有 section 的
+            // display 重置为 '', 放在前面设的 none 会被它抹掉。
+            const simg = document.getElementById('static-chart-img');
+            if (simg) {
+                const ssec = simg.closest('section');
+                if (M.staticChart) { simg.src = M.staticChart; if (ssec) ssec.style.display = ''; }
+                else if (ssec) { ssec.style.display = 'none'; }
             }
 
             document.getElementById('badge-latest-date').innerText = rawData[rawData.length - 1].date;
