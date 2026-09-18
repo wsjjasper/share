@@ -33,6 +33,7 @@ python rebuild_turnover_sw.py    # 换手率 (col 2) — 整列重建, --start 2
 # Signal validation — does the indicator actually predict anything? Read-only.
 python validate_signal.py                 # both markets
 python validate_signal.py --market cn --horizons 5,20
+python validate_signal.py --market us --candidates    # 分解: 哪一项带信号 / 候选维度值不值得加
 ```
 
 Dependencies (matching CI): `pip install pandas numpy akshare requests matplotlib openpyxl`.
@@ -392,6 +393,21 @@ an uncommitted CSV means every CI run silently republishes the dashboard with an
 is exactly what happened on the first attempt. The A-share data files are committed for the same
 reason. The US CSVs are not in `.gitignore`, so `update.py`'s `git add .` keeps them.
 
+**History is 15 years, not 4.** `default_start` was `365 * 4`, which at a 60-day horizon leaves about
+13 independent observations — enough to produce numbers, not enough to mean anything. It is now
+`365 * 15`: 3771 sessions from 2011-09-21, 3643 rows of output. Know the bias that buys: `UNIVERSE`
+is *today's* S&P 100, so names that existed then and are gone now never appear, while names that did
+not exist yet (META 2012, TSLA 2010, ABBV 2013, PYPL 2015) have no bars and are excluded by
+`MIN_UNIVERSE` on those days. Survivorship runs one way and it flatters long backtests.
+
+**A partial intraday bar can reach the CSV.** Before the US close, yfinance returns an *unfinished*
+bar for the current session whose "close" is the price right now. 2026-09-17 entered the result file
+twice that way, once carrying a 60.4% breadth reading for a session that had not finished. `MIN_SUBS`
+only catches the case where the constituents return nothing at all, not the case where they return
+mid-session numbers. `us_fetch_daily.py` now drops rows dated on the current US/Eastern day until
+16:15 ET. Check the clock rather than dropping "today" unconditionally — at 20:23 ET the session is
+complete and discarding it would throw away a full valid day.
+
 First live run (2026-09-17) fetched 1005 trading days back to 2022-09-19 and produced 880 rows of
 output (the first 252 are consumed by the rolling window). Two fixes came out of it:
 
@@ -450,195 +466,13 @@ than 「全市场成交额」, which it never was. Switching caliber moved 2026-
 percentile to 26.20 and the composite from 63.53 to 50.73 — a measure of how much the ETF proxy was
 distorting things. `BK` was dropped from `UNIVERSE` while remapping; it had been 404ing every run.
 
-## Rebuilding breadth: `backfill_breadth_sina.py`
-
-Reconstructs 上涨个股占比 for past dates by counting, stock by stock, how many closed above their
-previous close. It exists because nothing returns breadth by date: the exchanges' own summaries
-carry turnover, market cap and turnover rate but no advance/decline counts; every date-parameterized
-akshare function is either unrelated or a 涨停板 pool; 乐咕's 赚钱效应 is a snapshot whose page
-structure changed (the function raises); and guessing at 乐咕 JSON API paths returns 404.
-
-The cost is driven by the **number of stocks, not the number of dates** — each request returns a
-whole date range — so `DATALEN` (60) is nearly free and is set to leave ~44 trading days outside the
-backfill range to validate against. The universe comes from the 新浪 list endpoint (~5560 including
-北交所) and the bars from 新浪 `CN_MarketData.getKLineData` at ~0.28s each, so a full pass is about
-26 minutes. Use 新浪, not Eastmoney: Eastmoney throttles a burst of this size within a few hundred
-requests and then closes connections. Only per-date counters are cached (`_breadth_cache.tmp`,
-gitignored), never the bars, and the processed-symbol list makes the run resumable.
-
-Measured against the Wind rows: MAD **0.09pp**, max deviation 0.46pp, correlation **1.0000** over 41
-trading days. It reproduces the column almost exactly.
-
-**The validation window must exclude the backfill range** (`--start`), the same rule
-`backfill_industry_sw.py` follows. Leaving it in cost real accuracy here: 2026-08-24 and 2026-08-25
-are themselves bad rows, and with them inside the window MAD read 1.22pp and correlation 0.9742 —
-a flawless reconstruction looked merely adequate.
-
-**How those two rows were caught, and why it generalizes.** 2026-08-21 and 2026-08-24 carry
-*identical* values in three columns at once — 上涨占比 45.134501, 上涨家数 2500, 成份数 5539 — which is
-the same "one snapshot written to several dates" bug already recorded for 2026-08-27/08-28. Hence
-the default `--start` is 2026-08-24, not 2026-08-26, and 18 rows were rewritten rather than 16.
-**Duplicate values across adjacent dates are the signature of this whole class of bug**; when a
-backfill disagrees with stored data, check whether the stored row is a copy of its neighbour before
-assuming the new source is wrong.
-
-## Rebuilding the turnover column: `rebuild_turnover_sw.py`
-
-A one-off script that overwrote column 2 for every row from 2015-01-01 on. It exists because
-**Wind's original 换手率 column cannot be reconstructed from any free source.** Measured over 51
-trading days against the exchanges' own published summaries (`stock_sse_deal_daily(date)` for 沪
-and `stock_szse_summary(date)` for 深, which publish 成交金额 and 流通市值 by date):
-
-| pair | corr |
-| --- | --- |
-| Wind 成交额 vs exchange 成交额 | **1.0000** |
-| exchange 换手率 vs exchange 成交额 | 0.9876 |
-| Wind 换手率 vs exchange 换手率 | 0.6770 |
-| Wind 换手率 vs **Wind's own 成交额** | **0.6810** |
-
-The 成交额 columns agree perfectly, so the disagreement is entirely in the denominator — and Wind's
-implied denominator moves a median of **4.05% per day** where the real float market cap moves 1.26%.
-The column carries ~12% idiosyncratic variation relative to any real turnover rate, so no
-`成交额 ÷ 市值` construction reproduces it. Do not spend time looking again; 乐咕
-(`stock_a_congestion_lg` is 拥挤度 with NaN recent values, `stock_market_activity_legu` is broken)
-and 申万市场表征 were checked too.
-
-The way out is that the composite consumes **percentile ranks within each column's own rolling
-252-day window**, so a column only needs to be self-consistent — it does not need to match Wind.
-The rebuilt series is a genuine turnover rate: per-year correlation with 成交额 of 0.9327 (worst
-year 0.8232) versus 0.7166 for the column it replaced.
-
-Range matters: this endpoint returns **nothing usable before 2014** (rows exist but carry fewer
-than `SW_MIN_INDUSTRIES`), 87% of 2014, and 98.8–100% from 2015. A full-history run therefore fails
-its own coverage gate at 47% — use `--start 2015-01-01`, which scores 99.40%. The splice at
-2015-01-01 is harmless because the earliest output (2024-09-24) looks back only 252 rows, to
-2023-09-08. Gap days are written as `NaN` rather than left at the old caliber: a mixed-caliber
-column is worse than a missing cell.
-
-Its gate is self-consistency, not agreement with Wind: coverage ≥ 95%, every value within
-0.2–20%, per-year correlation with 成交额 ≥ 0.85, and implied-denominator median daily move ≤ 3%.
-**Correlation must be computed per year and then medianed** — 成交额 is a level and 换手率 a ratio
-whose denominator grew two orders of magnitude, so a single correlation across all history is
-meaningless (Wind's own column scores 0.169 across 26 years but 0.72 within a year). Results are
-cached in `_sw_turnover_cache.tmp` (gitignored via `*.tmp`) so validate and `--apply` do not refetch;
-`--refetch` forces a re-pull.
-## The US market tab
-
-The dashboard carries two markets in one page. **There is only one set of DOM elements**: the tab
-switch swaps the underlying dataset and the labels, it does not duplicate the markup. The four
-sub-indicator keys are deliberately identical across markets (`turnover`, `top3_ind`, `rise_pct`,
-`margin_pct` and their `pct_*` twins), so `updateDashboard`, the table and the chart builders never
-branch on market — what a key *means* comes from the `MARKETS` config in the page, which supplies
-per-market titles, card labels, chart series names, axis names and the raw-value unit suffix
-(`%` for A-shares, none for the US since its values carry mixed units).
-
-`generate_html.py` injects two arrays into `const DATASETS`. The US one is read from
-`us_sentiment_result.csv` when that file exists and is `[]` otherwise, which makes the tab render an
-explicit "尚无数据" empty state — `switchMarket` hides every `main > section` and shows the
-placeholder. Nothing is ever filled with example or estimated numbers.
-
-**The two injection sentinels must not be substrings of one another.** The original pair was
-`DATA_JSON_PLACEHOLDER` and `US_DATA_JSON_PLACEHOLDER`; the first `str.replace` rewrote the tail of
-the second, leaving `us: US_[{…A-share data…}]` — wrong data *and* a ReferenceError that killed the
-whole script. The US slot is now `US_DATA_JSON_SLOT`.
-
-`populateTable()` clears `tbody` before filling it; without that, every tab switch appended another
-15 rows.
-
-**`sec.hidden = true` is not enough to hide a section.** Tailwind's display utilities beat the UA
-stylesheet's `[hidden] { display: none }`, so the 「四大微观情绪子指标」section — the one carrying
-`class="grid ..."` — kept rendering on an empty US tab with the attribute set (`hidden` true,
-`display: grid`). The other six sections have no display class, which is why only that one leaked.
-`switchMarket` now sets `sec.style.display` as well; an inline style outranks the class.
-
-**Everything market-specific has to come from `MARKETS`, not the static markup.** Hiding a section
-only helps while a market is empty; once its data lands the section renders again, A-share wording
-and all. `MARKETS` therefore also carries `docTitle`, `footerSystem`, `footerSource` and a `method`
-block (intro prose, the composite formula, and the four sub-indicator table rows), and
-`switchMarket` rebuilds the 子指标 table, the 明细表 header row (from `subs[i].raw` and
-`subs[i].label`) and the raw-series chart title (from `axisLeft`/`axisRight`). The footer sits
-*outside* `main`, so it is never covered by the section hiding and has to be switched explicitly.
-Two sentences that named 换手率 in passing were reworded to be market-neutral instead of being
-duplicated per market. The check that matters: on the US tab, no visible text may mention 万得全A,
-881001, 换手率, 融资买入 or 行业.
-
-### US pipeline
-
-`us_fetch_daily.py` → `us_market_data.csv` → `us_sentiment_indicator.py` → `us_sentiment_result.csv`.
-Needs `yfinance` on top of the A-share dependencies. **It is not wired into `update.py` or CI**, and
-CI does not install `yfinance`. Run the two scripts by hand when the US numbers should move.
-
-**The US stages now run in `update.py`, deliberately without a return-code check.** A-shares are the
-main line; the US tab is an addition riding on Yahoo, and one network blip there must not fail the
-whole daily run. On failure the step warns, skips the second script and continues — `generate_html.py`
-then republishes the page from the committed CSV, i.e. the previous day's US numbers. CI installs
-`yfinance` alongside the A-share dependencies, and `us_sentiment_result.csv` is in the `docs/` sync
-list because the page's download button links to it.
-
-**Both CSVs are committed, and that is load-bearing.** `generate_html.py` injects `[]` when
-`us_sentiment_result.csv` is absent, and CI regenerates the page three times every trading day — so
-an uncommitted CSV means every CI run silently republishes the dashboard with an empty US tab, which
-is exactly what happened on the first attempt. The A-share data files are committed for the same
-reason. The US CSVs are not in `.gitignore`, so `update.py`'s `git add .` keeps them.
-
-First live run (2026-09-17) fetched 1005 trading days back to 2022-09-19 and produced 880 rows of
-output (the first 252 are consumed by the rolling window). Two fixes came out of it:
-
-- `close.pct_change()` defaulted to `fill_method='pad'`, which forward-fills a halted day to the
-  prior close: the stock then scores a 0% change, stays in the denominator and counts as *not*
-  advancing, biasing breadth down. It is now `pct_change(fill_method=None)` so halted days drop out
-  of numerator and denominator alike — the same rule `backfill_breadth_sina.py` follows. It also
-  silences a pandas deprecation that would eventually have become an error.
-- Neither US script had the Windows UTF-8 stdout guard the A-share scripts carry, so
-  `us_sentiment_indicator.py` wrote its CSV and *then* died with `UnicodeEncodeError` on the `•` in
-  its summary — exit code 1 with the data already on disk. Wiring that into `update.py`, which
-  aborts on a non-zero return, would have failed the whole run for a cosmetic print.
-
-`UNIVERSE` still lists `BK`, which Yahoo 404s. 101 of 102 resolve, well above `MIN_UNIVERSE` (60),
-so the run proceeds — but it is a stale ticker, not a transient error.
-
-**Holiday rows, and why `MIN_SUBS` exists.** On US market holidays yfinance still returns a `^VIX`
-row while the sector ETFs and the constituent list return nothing, so the outer merge invents a row
-carrying VIX alone. `out[pct_cols].mean(axis=1)` skips NaN, so that row produced a "composite" that
-was really just the VIX percentile wearing a four-indicator label — 2026-05-25 (Memorial Day) scored
-64.48 and 2026-09-07 (Labor Day) 85.91 that way. `us_sentiment_indicator.py` now requires
-`MIN_SUBS` (3) of the four percentiles before it will emit a composite, and prints the dates it
-drops. 3 rather than 4 matches A-shares, where margin data legitimately does not exist before
-2010-03-31. Output went 880 → 878 rows. Note both dates *are* valid A-share sessions, so they
-still appear in the `cn` dataset — finding a date in the page is not evidence it survived here.
-
-**⚠ 板块集中度 is the weakest of the four and is knowingly shipped as-is.** It is the top-3 share of
-just 11 SPDR ETFs, which bounds it from below at 3/11 = 27.3% and squeezes the whole 879-day history
-into 35.5–60.1% with a standard deviation of 3.47pp. Feed a distribution that tight into a rolling
-percentile and the percentile amplifies noise: a 10pp move in the raw value sweeps the entire
-historical range, so 2026-09-15 → 09-16 went 42.89% → 53.29% and the percentile went 14.6 → 96.2.
-101 of 879 days move the percentile by more than 50 points. Compare the coefficient of variation
-(std ÷ mean) across the four:
-
-| sub-indicator | CV | median daily percentile move | days moving >50 |
-| --- | --- | --- | --- |
-| 板块集中度 | **0.076** | 18.7 | 101 |
-| 成交额 | 0.355 | 14.3 | 42 |
-| 上涨占比 | 0.388 | 26.4 | 179 |
-| VIX | 0.243 | 5.0 | 1 |
-
-上涨占比 also jumps often, but that is genuine — breadth really does swing from 8% to 94%, exactly as
-it does for A-shares. 板块集中度 is different: the series barely moves, so roughly a quarter of the US
-composite is close to noise. The A-share analogue avoids this by partitioning the market into 31
-申万一级 industries (floor 3/31 = 9.7%, observed 25–52%). Two further caveats on the same block of
-data: ETF trading volume reflects institutional hedging and creation/redemption flows rather than
-how actively a sector's underlying stocks trade, and the 11 ETFs sum to a median of 10.9 十亿美元
-against a real US tape of roughly 400–600 十亿, so the card labelled 「全市场成交额」 is measuring
-about 2% of the market. The fix, when someone wants it, is to aggregate the already-downloaded
-`UNIVERSE` constituents' dollar volume by GICS sector instead of using ETF volume.
-
 The four dimensions, and why they differ from the A-share set:
 
 | A-share | US | source |
 | --- | --- | --- |
-| 换手率 | total dollar volume (十亿美元) | the 11 SPDR sector ETFs, summed |
-| 成交额前三行业占比 | top-3 sector share (%) | same ETFs — one download feeds both, so they are self-consistent |
-| 上涨个股占比 | advancing share (%) | `UNIVERSE` in `us_fetch_daily.py`, an S&P 100 list — a **mega-cap** proxy, narrower than the A-share metric |
+| 换手率 | 成分股成交额 (十亿美元) | `UNIVERSE` constituents, summed |
+| 成交额前三行业占比 | top-3 GICS sector share (%) | same constituents aggregated over `UNIVERSE_SECTORS` — one download feeds all three, so they are self-consistent |
+| 上涨个股占比 | advancing share (%) | same constituents — an S&P 100 list, so a **mega-cap** proxy, narrower than the A-share metric |
 | 融资买入额占比 | VIX | `^VIX`; FINRA margin debt is monthly, so there is no daily equivalent |
 
 **VIX enters inverted.** High VIX means fear means low sentiment, the opposite direction from the
@@ -648,6 +482,7 @@ account for that substitution — they are not the same index computed on differ
 
 `sentiment_core.py` holds `rolling_percentile_rank`; both `sentiment_indicator.py` and
 `us_sentiment_indicator.py` import it so the percentile math cannot drift between markets.
+
 ## Signal validation: `validate_signal.py`
 
 The repo gates **data caliber** hard (every backfill script refuses to write unless it matches Wind
@@ -684,9 +519,57 @@ means 13 independent observations at a 60-day horizon.
 
 **Conclusion carried by the dashboard: this is a coincident, descriptive indicator with no
 demonstrated timing value.** Anyone proposing to change a sub-indicator should run this first and
-compare, rather than reasoning from whether the new series "looks better". Obvious research
-directions — valuation percentiles, margin *changes* rather than levels, VIX term structure — all
-have to clear the same bar.
+compare, rather than reasoning from whether the new series "looks better".
+
+### `--candidates`: where the signal actually is
+
+`--candidates` adds a decomposition — each sub-indicator alone, every leave-one-out combination, and
+a candidate dimension (20-day realized volatility of the benchmark, inverted, i.e. the VIX
+construction). Run after extending US history to 3771 sessions, at the 5-day horizon, reading the
+share of non-overlapping subsamples that come out significant:
+
+| series | share significant |
+| --- | --- |
+| 仅 VIX反向 | **100%** ✓ |
+| 候选: 已实现波动率反向 | **100%** ✓ |
+| 去掉 成交额 | 80% ✓ |
+| 去掉 板块集中度 | 60% ✓ |
+| 去掉 上涨占比 | 60% ✓ |
+| 合成 (four components) | 40% |
+| **去掉 VIX反向** | **0%** |
+
+Every combination that *keeps* VIX clears the 50% bar, dropping VIX takes it to zero, and VIX alone
+beats every combination containing it. **Equal weighting dilutes the one component that carries
+information.** Its bucket profile over 3623 sessions is cleanly monotonic — <20 averages +3.44% over
+the next 20 days against a +1.03% baseline, >80 averages +0.52% — with every bucket above
+`MIN_BUCKET_N`.
+
+**Do not read this as "the composite works now".** The verdict still fails: 20- and 60-day horizons
+come in at 25% and 3%, and the effect is one well-documented volatility mean-reversion phenomenon
+rather than anything the sentiment construction adds.
+
+### The volatility dimension does not transfer to A-shares
+
+The obvious follow-up — give A-shares the dimension the US has — was tested and **failed**. Realized
+volatility inverted, built identically on 上证综指 over 2586 sessions:
+
+| horizon | IC | share significant |
+| --- | --- | --- |
+| 5日 | −0.0044 (p=0.83) | 0% |
+| 20日 | **+0.0581** | 0% |
+| 60日 | **+0.1381** | 2% |
+
+The sign flips positive at 20 and 60 days — low A-share volatility preceding *higher* forward
+returns, the opposite of the US pattern — and nothing survives the non-overlapping check. Added as a
+fifth component it leaves the composite at 0% / 0% / 3%. In the US the same construction scores 100%
+at 5 days and correlates 0.806 with VIX, so the method is sound; the effect is simply absent from
+this A-share sample. **It was not adopted.** That is the gate working: a candidate that fails does
+not enter the composite, however plausible the story.
+
+Untested and still open: valuation percentiles, and margin *balance* changes rather than flow
+(`stock_margin_account_info` carries 融资余额 over 3392 sessions). Ruled out: `^VIX3M` and `^VIX9D`
+return a single day from Yahoo, so no VIX term structure from that source. `HYG`, `LQD` and `^TNX`
+all return 3771 sessions back to 2011 if someone wants a credit-spread proxy.
 
 ## `_latest.xlsx` fallback trap
 

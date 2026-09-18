@@ -148,7 +148,11 @@ def load_us(start, end):
     u = u.rename(columns=ren)
     subs = ['成交额', '板块集中度', '上涨占比', 'VIX反向']
 
-    sp = yf.download('^GSPC', start='2022-09-01', end='2026-12-31',
+    # 基准区间必须跟着结果文件走。写死起始日会悄悄截断样本 ——
+    # 美股历史拉到 15 年后, 写死 2022-09 让 3643 天的样本只剩 993 天。
+    sp_start = (u['date'].min() - pd.Timedelta(days=10)).strftime('%Y-%m-%d')
+    sp_end = (u['date'].max() + pd.Timedelta(days=120)).strftime('%Y-%m-%d')
+    sp = yf.download('^GSPC', start=sp_start, end=sp_end,
                      progress=False, auto_adjust=False)
     cl = sp['Close']
     cl = cl.iloc[:, 0] if hasattr(cl, 'columns') else cl
@@ -164,7 +168,7 @@ def load_us(start, end):
 
 # ---------- 检验 ----------
 
-def report(name, m, subs, idx_name, horizons):
+def report(name, m, subs, idx_name, horizons, show_candidates=False):
     print('=' * 68)
     print(f'{name}  ({len(m)} 个交易日, {m["date"].min():%Y-%m-%d} ~ {m["date"].max():%Y-%m-%d}, '
           f'基准 {idx_name})')
@@ -255,7 +259,55 @@ def report(name, m, subs, idx_name, horizons):
     if verdict['coincident']:
         print(f'  ! 与当日收益相关 {ic0:.2f} —— 这是同步(描述)指标, 不是领先指标')
     print()
+    if show_candidates:
+        candidates_report(m, subs, horizons)
     return verdict
+
+
+def candidates_report(m, subs, horizons):
+    """
+    分解检验: 每个子指标单独、留一法、以及候选新维度。
+
+    回答两个问题, 都是"要不要改合成"时真正该问的:
+      1. 信号到底在哪一项里? 等权合成会把有信号的项和没信号的项摊平 ——
+         实测美股 VIX 单项 5 日非重叠显著 100%, 四项合成后掉到 40%。
+      2. 候选的新维度值不值得加? 加进去之前先单独测, 不通过就别进合成。
+    """
+    import numpy as np
+
+    print('')
+    print('【分解检验】各成分单独 / 留一 / 候选维度')
+    cols = [('合成(全部)', 'composite')]
+    cols += [(f'仅 {c}', 'p_' + c) for c in subs if 'p_' + c in m.columns]
+    # 留一法: 少了某一项之后还剩多少信号
+    present = [c for c in subs if 'p_' + c in m.columns]
+    for c in present:
+        rest = ['p_' + x for x in present if x != c]
+        if len(rest) >= 2:
+            key = f'_loo_{c}'
+            m[key] = m[rest].mean(axis=1)
+            cols.append((f'去掉 {c}', key))
+    # 候选维度: 指数已实现波动率, 反向取分位 (与 VIX 同向的构造)
+    from sentiment_core import rolling_percentile_rank, WINDOW
+    rv = m['close'].pct_change().rolling(20).std() * np.sqrt(252) * 100
+    m['_rv_inv'] = 100.0 - rolling_percentile_rank(rv, WINDOW)
+    cols.append(('候选: 已实现波动率反向', '_rv_inv'))
+
+    print(f"{'序列':<22}{'持有期':>7}{'IC':>9}{'朴素p':>10}{'非重叠显著':>13}")
+    for lbl, col in cols:
+        for h in horizons:
+            v = m[[col, f'fwd{h}']].dropna()
+            if len(v) < 100:
+                continue
+            ic, p, _ = spearman(v[col], v[f'fwd{h}'])
+            share, _, ng = non_overlap_check(v[col].to_numpy(), v[f'fwd{h}'].to_numpy(), h)
+            ss = '—' if np.isnan(share) else f'{share*100:.0f}% ({ng}组)'
+            star = ' *' if (not np.isnan(share) and share >= 0.5) else ''
+            print(f"{lbl if h == horizons[0] else '':<22}{str(h)+'日':>7}"
+                  f"{ic:>9.4f}{p:>10.4f}{ss:>13}{star}")
+        print()
+    print('  * = 非重叠显著占比 >= 50%, 即通过本工具的门槛')
+    print('  合成一栏若明显弱于某个单项, 说明等权把信号摊平了。')
 
 
 def main():
@@ -264,20 +316,22 @@ def main():
     ap.add_argument('--start', default=None)
     ap.add_argument('--end', default=None)
     ap.add_argument('--horizons', default=','.join(str(h) for h in HORIZONS))
+    ap.add_argument('--candidates', action='store_true',
+                    help='额外做分解检验: 各成分单独、留一法、候选新维度')
     args = ap.parse_args()
     hs = tuple(int(x) for x in args.horizons.split(',') if x.strip())
 
     if args.market in ('cn', 'both'):
         try:
             m, subs, idx = load_cn(args.start or CN_DEFAULT_START, args.end or CN_DEFAULT_END)
-            report('A 股', m, subs, idx, hs)
+            report('A 股', m, subs, idx, hs, args.candidates)
         except Exception as e:
             print(f'[A股] 检验失败: {type(e).__name__}: {e}\n')
 
     if args.market in ('us', 'both'):
         try:
             m, subs, idx = load_us(args.start, args.end)
-            report('美股', m, subs, idx, hs)
+            report('美股', m, subs, idx, hs, args.candidates)
         except Exception as e:
             print(f'[美股] 检验失败: {type(e).__name__}: {e}\n')
 
