@@ -78,19 +78,31 @@ def non_overlap_check(ind, fwd, h):
     """
     把重叠样本切成 h 组互不重叠的子样本, 每组独立算 IC。
 
-    返回 (显著组占比, IC 中位数, 组数)。这是判断 IC 是否真实的关键一步 ——
-    重叠窗口下相邻观测高度自相关, 朴素 p 值会小到毫无意义。
+    返回 (显著组占比, 同号组占比, IC 中位数, 组数, 每组样本量)。
+    重叠窗口下相邻观测高度自相关, 朴素 p 值会小到毫无意义, 所以必须这样拆。
+
+    **两个指标要一起看。** "显著占比"受组大小影响很重: h=5 只能切 5 组、每组约 700
+    个观测, 哪怕 IC 只有 -0.08 也几乎必然显著; h=60 切 60 组、每组才 60 个观测, 同样
+    的真实信号也很难显著。所以三个完全不同的序列(VIX、信用利差、利率变化)在 5 日
+    都能报出 100% —— 那是组内样本量大, 不是信号强。
+    "同号占比"与组大小无关: 真实信号应当在绝大多数子样本里保持同一方向, 随机噪声
+    则在 50% 上下。判定以它为准更稳。
     """
     ics, sigs = [], []
+    ns = []
     for off in range(h):
         sx, sy = ind[off::h], fwd[off::h]
         ic, p, n = spearman(sx, sy)
         if not np.isnan(ic) and n >= 20:
             ics.append(ic)
             sigs.append(p < SIG_LEVEL)
+            ns.append(n)
     if not ics:
-        return np.nan, np.nan, 0
-    return float(np.mean(sigs)), float(np.median(ics)), len(ics)
+        return np.nan, np.nan, np.nan, 0, 0
+    arr = np.array(ics)
+    med = float(np.median(arr))
+    same = float(np.mean(np.sign(arr) == np.sign(med))) if med != 0 else np.nan
+    return float(np.mean(sigs)), same, med, len(ics), int(np.median(ns))
 
 
 # ---------- 取数 ----------
@@ -182,16 +194,16 @@ def report(name, m, subs, idx_name, horizons, show_candidates=False):
     verdict = {'ic': False, 'mono': False, 'coincident': False}
 
     print('\n【1/4】综合指标 IC 与未来收益')
-    print(f"{'持有期':<8}{'IC':>9}{'朴素p':>10}{'有效样本':>10}{'非重叠显著占比':>16}")
+    print(f"{'持有期':<8}{'IC':>9}{'朴素p':>10}{'有效样本':>10}{'非重叠 显著%/同号% (组数×每组n)':>22}")
     for h in horizons:
         ic, p, n = spearman(m['composite'], m[f'fwd{h}'])
         v = m[['composite', f'fwd{h}']].dropna()
-        share, med, ngrp = non_overlap_check(v['composite'].to_numpy(),
-                                             v[f'fwd{h}'].to_numpy(), h)
-        share_s = '—' if np.isnan(share) else f'{share*100:.0f}% ({ngrp}组)'
-        print(f"{str(h)+'日':<8}{ic:>9.4f}{p:>10.4f}{n//h:>10d}{share_s:>16}")
-        # 只有朴素显著 *且* 多数非重叠子样本也显著, 才算真有信号
-        if p < SIG_LEVEL and not np.isnan(share) and share >= 0.5:
+        share, same, med, ngrp, gn = non_overlap_check(v['composite'].to_numpy(),
+                                                      v[f'fwd{h}'].to_numpy(), h)
+        ss = '—' if np.isnan(share) else f'{share*100:.0f}%/{same*100:.0f}% ({ngrp}组×{gn})'
+        print(f"{str(h)+'日':<8}{ic:>9.4f}{p:>10.4f}{n//h:>10d}{ss:>22}")
+        # 判定以"同号占比"为主: 显著占比会被组内样本量带着走
+        if p < SIG_LEVEL and not np.isnan(same) and same >= 0.8 and share >= 0.5:
             verdict['ic'] = True
 
     print('\n【2/4】分档后续收益 (以 20 日为准)')
@@ -293,20 +305,22 @@ def candidates_report(m, subs, horizons):
     m['_rv_inv'] = 100.0 - rolling_percentile_rank(rv, WINDOW)
     cols.append(('候选: 已实现波动率反向', '_rv_inv'))
 
-    print(f"{'序列':<22}{'持有期':>7}{'IC':>9}{'朴素p':>10}{'非重叠显著':>13}")
+    print(f"{'序列':<22}{'持有期':>7}{'IC':>9}{'朴素p':>10}{'显著%/同号% (组×n)':>20}")
     for lbl, col in cols:
         for h in horizons:
             v = m[[col, f'fwd{h}']].dropna()
             if len(v) < 100:
                 continue
             ic, p, _ = spearman(v[col], v[f'fwd{h}'])
-            share, _, ng = non_overlap_check(v[col].to_numpy(), v[f'fwd{h}'].to_numpy(), h)
-            ss = '—' if np.isnan(share) else f'{share*100:.0f}% ({ng}组)'
-            star = ' *' if (not np.isnan(share) and share >= 0.5) else ''
+            share, same, _, ng, gn = non_overlap_check(v[col].to_numpy(),
+                                                      v[f'fwd{h}'].to_numpy(), h)
+            ss = '—' if np.isnan(share) else f'{share*100:.0f}%/{same*100:.0f}% ({ng}×{gn})'
+            star = ' *' if (not np.isnan(same) and same >= 0.8 and share >= 0.5) else ''
             print(f"{lbl if h == horizons[0] else '':<22}{str(h)+'日':>7}"
-                  f"{ic:>9.4f}{p:>10.4f}{ss:>13}{star}")
+                  f"{ic:>9.4f}{p:>10.4f}{ss:>20}{star}")
         print()
-    print('  * = 非重叠显著占比 >= 50%, 即通过本工具的门槛')
+    print('  * = 同号占比 >= 80% 且 显著占比 >= 50%, 即通过本工具的门槛')
+    print('  显著% 受每组样本量影响(5日每组约700个, 60日只有约60个), 同号% 不受影响, 以后者为准。')
     print('  合成一栏若明显弱于某个单项, 说明等权把信号摊平了。')
 
 

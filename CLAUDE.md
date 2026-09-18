@@ -566,10 +566,53 @@ at 5 days and correlates 0.806 with VIX, so the method is sound; the effect is s
 this A-share sample. **It was not adopted.** That is the gate working: a candidate that fails does
 not enter the composite, however plausible the story.
 
-Untested and still open: valuation percentiles, and margin *balance* changes rather than flow
-(`stock_margin_account_info` carries 融资余额 over 3392 sessions). Ruled out: `^VIX3M` and `^VIX9D`
-return a single day from Yahoo, so no VIX term structure from that source. `HYG`, `LQD` and `^TNX`
-all return 3771 sessions back to 2011 if someone wants a credit-spread proxy.
+### Every candidate tested so far, and why none was adopted
+
+| candidate | market | verdict |
+| --- | --- | --- |
+| 已实现波动率反向 | US | passes 5d — but correlates 0.806 with VIX, so it is the same effect |
+| 已实现波动率反向 | CN | **fails**; sign flips positive at 20/60d |
+| 两融余额 20日变化率 | CN | **fails** — 0% / 5% / 13% significant, sign 
+| 估值分位 (月频 middlePB) | CN | **fails** the non-overlap check |
+| 信用利差代理 HYG/LQD 分位 | US | 5d only; collapses to 5% / 0% at 20d / 60d |
+| 信用利差 20日变化 | US | **fails** — 20% / 10% / 5% |
+| 利率 ^TNX 20日变化 | US | 5d only; 0% / 2% at 20d / 60d |
+
+Notes worth keeping. **Valuation is monthly, not daily** — `stock_market_pe_lg`, `stock_a_all_pb` and
+`stock_index_pe_lg` all return ~261 monthly rows, and the precomputed `quantileIn…` columns are
+populated only on the latest row, so a rolling percentile has to be computed from `middlePB`
+yourself. Forward-filling monthly values into a daily 252-row window gives a staircase with about 12
+distinct levels and is meaningless; test it at monthly frequency instead. Doing that, the 6-month IC
+reads −0.2072 (p=0.0038) and the >80 bucket averages **−16.12% with a 0% win rate** — which looks
+devastating until you notice it is 14 monthly observations almost entirely inside the 2007 and 2015
+bubbles, and that the middle buckets are not monotonic (20–40 is −1.46%, 60–80 is +6.72%).
+Non-overlap significance is 0%. **`^VIX3M` and `^VIX9D` return a single day from Yahoo**, so there is
+no VIX term structure from that source.
+
+### The validator's own flaw, and the fix
+
+Three unrelated US series — VIX, the HYG/LQD credit proxy and the 20-day change in `^TNX` — all
+reported **100%** non-overlapping significance at 5 days. That is not three signals; it is an
+artifact of the metric. At h=5 the sample splits into 5 groups of ~728 observations each, where an IC
+of −0.08 is significant almost automatically; at h=60 it splits into 60 groups of ~60, where a real
+effect of the same size often is not. "Share significant" tracks group size as much as signal.
+
+`non_overlap_check` now also returns the **share of subsamples whose IC carries the same sign as the
+median**, which is independent of group size — a real effect keeps direction in nearly every
+subsample, noise sits near 50%. The printout is `显著%/同号% (组数×每组n)` and the verdict requires
+同号 ≥ 80% *and* 显著 ≥ 50%. Reading the decomposition that way:
+
+| series | 5d | 20d | 60d |
+| --- | --- | --- | --- |
+| 仅 VIX反向 | 100%/**100%** | 35%/**100%** | 3%/**93%** |
+| 仅 板块集中度 | 0%/80% | 5%/100% | 5%/83% |
+| 仅 上涨占比 | 40%/80% | 10%/65% | 2%/58% |
+| 仅 成交额 | 0%/**60%** | 0%/**55%** | 2%/**52%** |
+| 去掉 VIX反向 | 0%/80% | 5%/90% | 5%/75% |
+
+成交额 sits at chance on sign consistency across every horizon — it contributes nothing. VIX holds
+direction in 93–100% of subsamples at all three. That is the one component with a claim to carrying
+information, and the composite still does not beat it.
 
 ## `_latest.xlsx` fallback trap
 
