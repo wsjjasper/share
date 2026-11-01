@@ -30,13 +30,17 @@ python backfill_industry_sw.py   # 行业集中度 (col 3/7) — 申万, seconds
 python backfill_breadth_sina.py  # 上涨个股占比 (col 4/8/9/11) — 逐只日线, ~26 min
 python rebuild_turnover_sw.py    # 换手率 (col 2) — 整列重建, --start 2015-01-01
 
+# 基本面 tab: 同花顺 reports for the codes in fundamentals_codes.txt → 基本面_合并.xlsx
+python fetch_fundamentals.py            # quarterly rule decides what to refetch
+python fetch_fundamentals.py --force    # refetch everything
+
 # Signal validation — does the indicator actually predict anything? Read-only.
 python validate_signal.py                 # both markets
 python validate_signal.py --market cn --horizons 5,20
 python validate_signal.py --market us --candidates    # 分解: 哪一项带信号 / 候选维度值不值得加
 ```
 
-Dependencies (matching CI): `pip install pandas numpy akshare requests matplotlib openpyxl`.
+Dependencies (matching CI): `pip install pandas numpy akshare requests matplotlib openpyxl yfinance xlrd`.
 Chinese fonts must be present or the chart renders with tofu boxes — CI installs
 `fonts-wqy-microhei fonts-noto-cjk`; `sentiment_indicator.py` tries SimHei / Microsoft YaHei /
 WenQuanYi Micro Hei / Noto Sans CJK SC in that order.
@@ -613,6 +617,32 @@ subsample, noise sits near 50%. The printout is `显著%/同号% (组数×每组
 成交额 sits at chance on sign consistency across every horizon — it contributes nothing. VIX holds
 direction in 93–100% of subsamples at all three. That is the one component with a claim to carrying
 information, and the composite still does not beat it.
+
+## The 基本面 tab: `fetch_fundamentals.py`
+
+A third tab unrelated to sentiment: it lists the stocks in `fundamentals_codes.txt` with the newest
+report period pulled for each, plus a download of the merged Excel. Source is 同花顺
+`basic.10jqka.com.cn/api/stock/export.php?export=main&type=report&code=…`, one request per stock.
+
+- **The `.xls` has a malformed compound-document directory**; xlrd refuses it unless opened with
+  `ignore_workbook_corruption=True`. Hence `xlrd` in CI. An unknown code returns HTTP 200 with an
+  **empty body** — treated as a failure, never as "no data".
+- **Refetch rule.** The expected period is the latest quarter end *strictly before* today
+  (`expected_period`). A stock whose cached `latest_period` is ≥ that is skipped, so on 2026-10-31 a
+  stock holding 2026-09-30 is not touched until 2027-01-01. While a due report is not yet published
+  (annual reports land as late as April) the stock is retried at most **once per calendar day**
+  (`last_checked`), so the three CI runs don't hammer 同花顺.
+- **State is committed**: `fundamentals/raw/{code}.csv` (each stock's last good report, 科目 ×
+  报告期) and `fundamentals_state.json`. Without them every CI run would refetch everything. A failed
+  download keeps the old cache. The merged Excel is rebuilt from the cache on every run, so removing
+  a code from the list drops it from the output without a fetch.
+- **Output** `基本面_合并.xlsx`: sheet 「最新一期」 is one row per stock at its own latest period;
+  「全部报告期」 is one row per stock with columns `"报告期 指标"`, newest period first. Plain numbers
+  become numeric; percentages like `100.20%` stay text as 同花顺 ships them.
+- Names come from Tencent `qt.gtimg.cn`; failure there is non-fatal.
+- `update.py` runs it without a return-code check (same reasoning as the US step), and
+  `generate_html.py` injects the list into `FUND_LIST_SLOT`. The panel is a `div`, not a `section`,
+  because `switchMarket` resets every `main > section`.
 
 ## `_latest.xlsx` fallback trap
 

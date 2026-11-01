@@ -84,6 +84,17 @@ def main():
                 print(res_us.stderr[-800:])
             break
 
+    # 4.6 基本面 (同花顺报表) —— 同样不检查返回码, 失败时页面沿用已入库的合并结果。
+    # 是否需要真正发请求由脚本按季度规则自行判断, 大部分交易日这一步只是重新合并缓存。
+    print_step("步骤 3.6: 基本面报表拉取与合并 (失败不中断)")
+    res_fund = subprocess.run([sys.executable, "fetch_fundamentals.py"], capture_output=True,
+                              text=True, encoding='utf-8', errors='ignore')
+    print(res_fund.stdout)
+    if res_fund.returncode != 0:
+        print(f"[警告] fetch_fundamentals.py 失败 (返回码 {res_fund.returncode}), 基本面沿用上次数据")
+        if res_fund.stderr:
+            print(res_fund.stderr[-800:])
+
     # 5. 生成交互式网页 index.html
     print_step("步骤 4: 重新生成交互式研报网页 (index.html)")
     res_html = subprocess.run([sys.executable, "generate_html.py"], capture_output=True, text=True, encoding='utf-8', errors='ignore')
@@ -105,6 +116,7 @@ def main():
         '情绪指标_图表.png',
         '副本万得全A.xlsx',
         'us_sentiment_result.csv',
+        '基本面_合并.xlsx',
         'update.py',
         '一键更新.bat'
     ]

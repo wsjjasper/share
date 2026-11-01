@@ -130,7 +130,7 @@ html_content = r"""<!DOCTYPE html>
                 </div>
             </div>
             <div class="flex items-center space-x-4">
-                <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                <span id="badge-latest-wrap" class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
                     <span class="w-2 h-2 mr-1.5 rounded-full bg-blue-500 animate-pulse"></span>
                     最新交易日: <span id="badge-latest-date">LATEST_DATE</span>
                 </span>
@@ -151,6 +151,38 @@ html_content = r"""<!DOCTYPE html>
                 class="px-5 py-2.5 text-sm font-semibold border-b-2 -mb-px transition-colors">A股</button>
             <button id="tab-us" type="button" role="tab" onclick="switchMarket('us')"
                 class="px-5 py-2.5 text-sm font-semibold border-b-2 -mb-px transition-colors">美股</button>
+            <button id="tab-fund" type="button" role="tab" onclick="showFundamentals()"
+                class="px-5 py-2.5 text-sm font-semibold border-b-2 -mb-px transition-colors">基本面</button>
+        </div>
+
+        <!-- 基本面 TAB: 用 div 而不是 section —— switchMarket 会统一重置 main > section 的显示 -->
+        <div id="fund-panel" style="display:none" class="glass-card rounded-2xl p-6 border border-slate-200 bg-white">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <div>
+                    <h2 class="text-base font-bold text-slate-900">个股基本面 · 同花顺主要指标报表</h2>
+                    <p class="text-xs text-slate-500 mt-1" id="fund-note"></p>
+                </div>
+                <a id="fund-download" href="基本面_合并.xlsx" download
+                   class="inline-flex items-center px-4 py-2 rounded-lg text-sm font-semibold bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm">
+                    下载合并 Excel
+                </a>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm text-slate-600">
+                    <thead class="bg-slate-50 text-xs text-slate-500 uppercase">
+                        <tr>
+                            <th class="px-3 py-2.5">#</th>
+                            <th class="px-3 py-2.5">代码</th>
+                            <th class="px-3 py-2.5">名称</th>
+                            <th class="px-3 py-2.5">已拉取最新财报日期</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 font-mono" id="fund-tbody"></tbody>
+                </table>
+            </div>
+            <div id="fund-empty" hidden class="text-center text-sm text-slate-500 py-10">
+                尚无数据 —— 在 fundamentals_codes.txt 中添加股票代码后运行更新
+            </div>
         </div>
 
         <!-- Empty state (shown when a market has no data yet) -->
@@ -656,6 +688,8 @@ html_content = r"""<!DOCTYPE html>
             cn: DATA_JSON_PLACEHOLDER,
             us: US_DATA_JSON_SLOT
         };
+        // 基本面列表与行情无关, 不进 DATASETS / MARKETS, 由 showFundamentals 单独渲染
+        const FUNDAMENTALS = FUND_LIST_SLOT;
 
         const MARKETS = {
             cn: {
@@ -1123,6 +1157,55 @@ html_content = r"""<!DOCTYPE html>
             setZoomPercent(0, document.getElementById('btn-zoom-all'));
         }
 
+        function setActiveTab(key) {
+            Object.keys(MARKETS).concat(['fund']).forEach(k => {
+                const btn = document.getElementById('tab-' + k);
+                if (!btn) return;
+                btn.className = 'px-5 py-2.5 text-sm font-semibold border-b-2 -mb-px transition-colors ' +
+                    (k === key ? 'border-indigo-600 text-indigo-700'
+                               : 'border-transparent text-slate-500 hover:text-slate-800');
+                btn.setAttribute('aria-selected', k === key ? 'true' : 'false');
+            });
+        }
+
+        // 基本面 TAB: 隐藏两个市场共用的全部 section, 只显示公司列表与已拉取的最新报告期
+        function showFundamentals() {
+            setActiveTab('fund');
+            document.getElementById('market-empty').hidden = true;
+            document.querySelectorAll('main > section').forEach(sec => {
+                sec.hidden = true;
+                sec.style.display = 'none';
+            });
+            document.getElementById('fund-panel').style.display = '';
+            document.getElementById('badge-latest-wrap').style.display = 'none';
+            document.getElementById('page-title').innerText = '个股基本面';
+            document.getElementById('page-subtitle').innerText = '同花顺主要指标报表 · 按季度自动拉取合并';
+            document.title = '个股基本面 | Fundamentals';
+            document.getElementById('footer-system').innerText = '个股基本面报表合并 · 自动归档至 GitHub docs';
+            document.getElementById('footer-source').innerText = '数据来源: 同花顺 basic.10jqka.com.cn 主要指标报表';
+
+            const rows = FUNDAMENTALS.stocks || [];
+            const tb = document.getElementById('fund-tbody');
+            tb.innerHTML = '';
+            rows.forEach((r, i) => {
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-slate-50';
+                [String(i + 1), r.code, r.name || '—', r.latest_period || '未拉取'].forEach((t, j) => {
+                    const td = document.createElement('td');
+                    td.className = 'px-3 py-2.5' + (j === 2 ? ' font-sans text-slate-900' : '') +
+                        (j === 3 && !r.latest_period ? ' text-rose-500' : '');
+                    td.innerText = t;
+                    tr.appendChild(td);
+                });
+                tb.appendChild(tr);
+            });
+            document.getElementById('fund-empty').hidden = rows.length > 0;
+            document.getElementById('fund-download').style.display = FUNDAMENTALS.has_file ? '' : 'none';
+            document.getElementById('fund-note').innerText = rows.length
+                ? '共 ' + rows.length + ' 只 · 财报按季度发布, 已有上一季末报告期的股票不会重复拉取'
+                : '';
+        }
+
         // 切换市场: 只换数据集与标签, DOM 与全部更新逻辑两个市场共用
         function switchMarket(key) {
             if (!MARKETS[key] || !DATASETS[key]) return;
@@ -1131,14 +1214,9 @@ html_content = r"""<!DOCTYPE html>
             rawData = DATASETS[key] || [];
             dates = rawData.map(d => d.date);
 
-            Object.keys(MARKETS).forEach(k => {
-                const btn = document.getElementById('tab-' + k);
-                if (!btn) return;
-                btn.className = 'px-5 py-2.5 text-sm font-semibold border-b-2 -mb-px transition-colors ' +
-                    (k === key ? 'border-indigo-600 text-indigo-700'
-                               : 'border-transparent text-slate-500 hover:text-slate-800');
-                btn.setAttribute('aria-selected', k === key ? 'true' : 'false');
-            });
+            setActiveTab(key);
+            document.getElementById('fund-panel').style.display = 'none';
+            document.getElementById('badge-latest-wrap').style.display = '';
 
             document.getElementById('page-title').innerText = M.title;
             document.getElementById('page-subtitle').innerText = M.subtitle;
@@ -1267,6 +1345,21 @@ html_content = html_content.replace('DATA_JSON_PLACEHOLDER', data_json)
 # replace 会把它一起替换掉, 美股槽位会被 A 股数据污染并导致 JS 报错
 html_content = html_content.replace('US_DATA_JSON_SLOT',
                                     json.dumps(us_records, ensure_ascii=False))
+
+# 基本面: 代码列表顺序 + fundamentals_state.json 中已拉取的最新报告期
+fund_stocks = []
+codes_path = os.path.join(BASE_DIR, 'fundamentals_codes.txt')
+if os.path.exists(codes_path):
+    from fetch_fundamentals import read_codes, load_state
+    fund_state = load_state()
+    for code in read_codes():
+        info = fund_state.get(code, {})
+        fund_stocks.append({'code': code, 'name': info.get('name', ''),
+                            'latest_period': info.get('latest_period')})
+fund_data = {'stocks': fund_stocks,
+             'has_file': os.path.exists(os.path.join(BASE_DIR, '基本面_合并.xlsx'))}
+print(f"基本面: {len(fund_stocks)} 只股票")
+html_content = html_content.replace('FUND_LIST_SLOT', json.dumps(fund_data, ensure_ascii=False))
 
 # Write to root index.html and docs/index.html
 output_html_root = os.path.join(BASE_DIR, 'index.html')
