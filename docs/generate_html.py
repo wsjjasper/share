@@ -174,14 +174,15 @@ html_content = r"""<!DOCTYPE html>
                             <th class="px-3 py-2.5">#</th>
                             <th class="px-3 py-2.5">代码</th>
                             <th class="px-3 py-2.5">名称</th>
-                            <th class="px-3 py-2.5">已拉取最新财报日期</th>
+                            <th class="px-3 py-2.5">公司分类</th>
+                            <th class="px-3 py-2.5">已拉取最新财报</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-100 font-mono" id="fund-tbody"></tbody>
                 </table>
             </div>
             <div id="fund-empty" hidden class="text-center text-sm text-slate-500 py-10">
-                尚无数据 —— 在 fundamentals_codes.txt 中添加股票代码后运行更新
+                尚无数据 —— 在 基本面_模板.xlsx 中添加股票后运行更新
             </div>
         </div>
 
@@ -1190,10 +1191,10 @@ html_content = r"""<!DOCTYPE html>
             rows.forEach((r, i) => {
                 const tr = document.createElement('tr');
                 tr.className = 'hover:bg-slate-50';
-                [String(i + 1), r.code, r.name || '—', r.latest_period || '未拉取'].forEach((t, j) => {
+                [String(i + 1), r.code, r.name || '—', r.category || '—', r.latest_quarter || '未拉取'].forEach((t, j) => {
                     const td = document.createElement('td');
-                    td.className = 'px-3 py-2.5' + (j === 2 ? ' font-sans text-slate-900' : '') +
-                        (j === 3 && !r.latest_period ? ' text-rose-500' : '');
+                    td.className = 'px-3 py-2.5' + (j === 2 || j === 3 ? ' font-sans text-slate-900' : '') +
+                        (j === 4 && !r.latest_quarter ? ' text-rose-500' : '');
                     td.innerText = t;
                     tr.appendChild(td);
                 });
@@ -1201,8 +1202,9 @@ html_content = r"""<!DOCTYPE html>
             });
             document.getElementById('fund-empty').hidden = rows.length > 0;
             document.getElementById('fund-download').style.display = FUNDAMENTALS.has_file ? '' : 'none';
+            const cats = [...new Set(rows.map(r => r.category))];
             document.getElementById('fund-note').innerText = rows.length
-                ? '共 ' + rows.length + ' 只 · 财报按季度发布, 已有上一季末报告期的股票不会重复拉取'
+                ? '共 ' + rows.length + ' 只 · ' + cats.length + ' 个分类 · 财报按季度发布, 已有上一季报告的股票不会重复拉取'
                 : '';
         }
 
@@ -1346,16 +1348,9 @@ html_content = html_content.replace('DATA_JSON_PLACEHOLDER', data_json)
 html_content = html_content.replace('US_DATA_JSON_SLOT',
                                     json.dumps(us_records, ensure_ascii=False))
 
-# 基本面: 代码列表顺序 + fundamentals_state.json 中已拉取的最新报告期
-fund_stocks = []
-codes_path = os.path.join(BASE_DIR, 'fundamentals_codes.txt')
-if os.path.exists(codes_path):
-    from fetch_fundamentals import read_codes, load_state
-    fund_state = load_state()
-    for code in read_codes():
-        info = fund_state.get(code, {})
-        fund_stocks.append({'code': code, 'name': info.get('name', ''),
-                            'latest_period': info.get('latest_period')})
+# 基本面: 股票列表取自 基本面_模板.xlsx (sheet 名即公司分类), 最新季度取自 fundamentals_state.json
+from fetch_fundamentals import stock_summary
+fund_stocks = stock_summary()
 fund_data = {'stocks': fund_stocks,
              'has_file': os.path.exists(os.path.join(BASE_DIR, '基本面_合并.xlsx'))}
 print(f"基本面: {len(fund_stocks)} 只股票")
