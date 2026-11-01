@@ -656,8 +656,10 @@ failed stock is retried on the next run rather than waiting a day.
   the template's zip and writes it back as plain notes.
 - Repeated row-1 headers are merged. `fullCalcOnLoad` is set because openpyxl drops cached formula
   results.
-- `CODE_FIXES` maps the template's typo `68851` to 航亚科技 `688510`; LED's codes are stored as
-  integers and are zero-padded on read.
+- `CODE_FIXES` (empty now) maps bad template codes; 航亚科技's `68851` typo was corrected to `688510`
+  in the template itself by editing `sharedStrings.xml` in place — **never round-trip the template
+  through openpyxl**, it would drop the threaded comments. LED's codes are stored as integers and are
+  zero-padded on read.
 - **Refetch rule.** The expected period is the latest quarter end *strictly before* today. A stock
   whose cached `latest_period` is ≥ that is skipped; while a due report is not out yet it is retried
   at most once per calendar day (`last_checked`). An unknown code returns HTTP 200 with an empty
