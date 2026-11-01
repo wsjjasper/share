@@ -30,7 +30,7 @@ python backfill_industry_sw.py   # 行业集中度 (col 3/7) — 申万, seconds
 python backfill_breadth_sina.py  # 上涨个股占比 (col 4/8/9/11) — 逐只日线, ~26 min
 python rebuild_turnover_sw.py    # 换手率 (col 2) — 整列重建, --start 2015-01-01
 
-# 基本面 tab: 同花顺 reports for the codes in fundamentals_codes.txt → 基本面_合并.xlsx
+# 基本面 tab: 同花顺 reports for the stocks in 基本面_模板.xlsx → 基本面_合并.xlsx
 python fetch_fundamentals.py            # quarterly rule decides what to refetch
 python fetch_fundamentals.py --force    # refetch everything
 
@@ -620,29 +620,53 @@ information, and the composite still does not beat it.
 
 ## The 基本面 tab: `fetch_fundamentals.py`
 
-A third tab unrelated to sentiment: it lists the stocks in `fundamentals_codes.txt` with the newest
-report period pulled for each, plus a download of the merged Excel. Source is 同花顺
-`basic.10jqka.com.cn/api/stock/export.php?export=main&type=report&code=…`, one request per stock.
+A third tab unrelated to sentiment. **The user's own workbook `基本面_模板.xlsx` is the template and
+the stock list** — each sheet is a company category (光学 / LED / 有色 / 军工), column A the code,
+column B the name, one stock per row from row 3. The script never writes to it; it loads it, fills
+it from 同花顺 and saves the result as `基本面_合并.xlsx`, rebuilt from scratch every run. To add or
+drop a stock, or to change formulas, replace the template.
 
-- **The `.xls` has a malformed compound-document directory**; xlrd refuses it unless opened with
-  `ignore_workbook_corruption=True`. Hence `xlrd` in CI. An unknown code returns HTTP 200 with an
-  **empty body** — treated as a failure, never as "no data".
-- **Refetch rule.** The expected period is the latest quarter end *strictly before* today
-  (`expected_period`). A stock whose cached `latest_period` is ≥ that is skipped, so on 2026-10-31 a
-  stock holding 2026-09-30 is not touched until 2027-01-01. While a due report is not yet published
-  (annual reports land as late as April) the stock is retried at most **once per calendar day**
-  (`last_checked`), so the three CI runs don't hammer 同花顺.
-- **State is committed**: `fundamentals/raw/{code}.csv` (each stock's last good report, 科目 ×
-  报告期) and `fundamentals_state.json`. Without them every CI run would refetch everything. A failed
-  download keeps the old cache. The merged Excel is rebuilt from the cache on every run, so removing
-  a code from the list drops it from the output without a fetch.
-- **Output** `基本面_合并.xlsx`: sheet 「最新一期」 is one row per stock at its own latest period;
-  「全部报告期」 is one row per stock with columns `"报告期 指标"`, newest period first. Plain numbers
-  become numeric; percentages like `100.20%` stay text as 同花顺 ships them.
-- Names come from Tencent `qt.gtimg.cn`; failure there is non-fatal.
-- `update.py` runs it without a return-code check (same reasoning as the US step), and
-  `generate_html.py` injects the list into `FUND_LIST_SLOT`. The panel is a `div`, not a `section`,
-  because `switchMarket` resets every `main > section`.
+Source is 同花顺 `basic.10jqka.com.cn/api/stock/export.php?export=main&type=report&code=…`, one
+request per stock, ~2–3 s each, fetched `MAX_WORKERS` (4) at a time — a full refetch of 155 stocks
+takes about 2 minutes, and a normal run fetches nothing. Downloads run in threads, but the cache
+CSV and `fundamentals_state.json` are written only from the main thread, **after every stock**, so a
+run killed midway does not refetch what it finished. `last_checked` is set only on success, so a
+failed stock is retried on the next run rather than waiting a day.
+
+- **What gets filled.** Five quarterly blocks (`METRICS`): 营业总收入同比增长率, 扣非净利润同比增长率,
+  基本每股收益, 净资产收益率, 销售净利率. A block is found by its row-1 name plus row-2 labels like
+  `2026Q3` — never by column letter, because inserting quarters moves everything. Template values
+  are 同花顺's percentages ÷ 100 and ROE is the non-diluted 净资产收益率 (verified cell-for-cell
+  against 福晶科技). Everything else — the annual blocks, the smoothed/growth formula blocks, the
+  scoring columns C–AN — is the user's and is left alone.
+- **Only empty cells are filled.** A value already in the template is kept even if 同花顺 differs;
+  the run prints such differences instead.
+- **New quarters are inserted as columns** at the end of each raw block, the way Excel inserts
+  columns: every formula reference at or right of the insertion point shifts (`shift_formula`, via
+  openpyxl's `Tokenizer`), as do conditional-formatting ranges and column-width spans. **openpyxl's
+  `insert_cols` does none of that by itself** — it moves cells and leaves formulas pointing at the
+  wrong columns. Scoring formulas that name a specific quarter (e.g. K's
+  `GF3>GB3` for ROE 2026Q1 vs 2025Q1) keep naming that quarter after the insert; rolling them
+  forward is the user's call, exactly as in Excel. The smoothed blocks are formula blocks and do not
+  get new columns.
+- **Column widths are stored as spans** (`min`–`max`, the last one running to 16384), so they are
+  shifted as spans, not per letter, and capped at 16384.
+- **Threaded comments** (14 of them, column B of 军工 / LED) cannot be saved by openpyxl, which keeps
+  only the "[线程批注] 你的Excel版本…" placeholder. `restore_threaded_comments` reads the real text from
+  the template's zip and writes it back as plain notes.
+- Repeated row-1 headers are merged. `fullCalcOnLoad` is set because openpyxl drops cached formula
+  results.
+- `CODE_FIXES` maps the template's typo `68851` to 航亚科技 `688510`; LED's codes are stored as
+  integers and are zero-padded on read.
+- **Refetch rule.** The expected period is the latest quarter end *strictly before* today. A stock
+  whose cached `latest_period` is ≥ that is skipped; while a due report is not out yet it is retried
+  at most once per calendar day (`last_checked`). An unknown code returns HTTP 200 with an empty
+  body, which counts as a failure. The `.xls` needs xlrd with `ignore_workbook_corruption=True`.
+- **State is committed**: `fundamentals/raw/{code}.csv` and `fundamentals_state.json`. Without them
+  every CI run refetches everything.
+- `update.py` runs it without a return-code check. `generate_html.py` calls `stock_summary()` and
+  injects code / name / category / latest quarter into `FUND_LIST_SLOT`. The panel is a `div`, not a
+  `section`, because `switchMarket` resets every `main > section`.
 
 ## `_latest.xlsx` fallback trap
 
